@@ -1,6 +1,7 @@
 export type Snapshot = {
   context?: number
   fiveHour?: number
+  fiveHourResetsAt?: number
   sevenDay?: number
 }
 

@@ -120,7 +120,8 @@ test('sums file changes in the chat and shows the diff on click', async ($, on) 
 
 test('a chat line focuses its prompt until the next prompt', async ($, on) => {
   on('ui.render', () => ENGINE)
-  on('clock.now', () => ({ value: 1_000 }) as never)
+  let clock = 1_000
+  on('clock.now', () => ({ value: clock }) as never)
   on('clock.every', () => ({ value: undefined }) as never)
   on('prompt.submit', (_, e) => ({ text: e.text }) as never)
   on('tool.call', () => ({ result: 'ok' }) as never)
@@ -129,7 +130,7 @@ test('a chat line focuses its prompt until the next prompt', async ($, on) => {
 
   await $.prompt.submit({ text: 'first prompt', origin: { kind: 'composer' }, wait: false } as never)
   await $.tool.call({ tool: 'Bash', command: 'ls', description: 'List', tool_use_id: 'a' } as never)
-  on('clock.now', () => ({ value: 2_000 }) as never)
+  clock = 2_000
   await $.prompt.submit({ text: 'second prompt', origin: { kind: 'composer' }, wait: false } as never)
   await $.tool.call({ tool: 'Bash', command: 'pwd', description: 'Where', tool_use_id: 'b' } as never)
 
@@ -214,4 +215,61 @@ test('tracks a subagent and keeps its calls out of the log', async ($, on) => {
   expect(await pane.find({ text: 'Review PR 12' })).toBeDefined()
   expect(await pane.find({ text: /1 tool/ })).toBeDefined()
   expect(await pane.find({ text: '› Reading b.ts' })).toBeDefined()
+})
+
+test('counts failed calls on the chat line', async ($, on) => {
+  on('ui.render', () => ENGINE)
+
+  const group = await $.ui.mount({
+    plugin: 'tool-log',
+    surface: 'terminal',
+    component: 'ToolGroup',
+    props: {
+      calls: [
+        { tool: 'Bash', input: {}, isRunning: false, isErrored: true },
+        { tool: 'Read', input: {}, isRunning: false, isErrored: false },
+      ],
+      isActive: false,
+      isExpanded: false,
+    } as never,
+  })
+  expect(await group.find({ text: ' · 1 failed' })).toBeDefined()
+})
+
+test('notifies when a long turn ends', async ($, on) => {
+  const sent: string[] = []
+  on('clock.now', () => ({ value: 1_000 }) as never)
+  on('turn.complete', (_, e) => ({ text: e.answer }))
+  on('agent.list', () => ({ value: [] }) as never)
+  on('ui.notify', (_, e) => {
+    sent.push((e as { text: string }).text)
+    return { value: { isSent: true, channel: 'terminal' } } as never
+  })
+
+  await $.turn.complete({ answer: 'ok', durationMs: 5_000, isAborted: false, turnId: 'a', reason: 'answer' })
+  await $.turn.complete({ answer: 'ok', durationMs: 45_000, isAborted: false, turnId: 'b', reason: 'answer' })
+  expect(sent).toEqual(['Done'])
+})
+
+test('scrolls under a fixed header and starts at the newest row', async ($, on) => {
+  on('ui.render', () => ENGINE)
+  on('clock.now', () => ({ value: 1_000 }) as never)
+  on('tool.call', () => ({ result: 'ok' }) as never)
+
+  for (let i = 0; i < 30; i++) {
+    await $.tool.call({ tool: 'Bash', command: `echo ${i}`, description: `Step ${i}`, tool_use_id: `s${i}` } as never)
+  }
+
+  const pane = await $.ui.mount({
+    plugin: 'tool-log',
+    surface: 'terminal',
+    component: 'Pane',
+    requestId: 'tool-log',
+    props: { title: 'Panel', isFocused: true, bodyColumns: 56, placement: 'dock', scroll: { bodyRows: 20 } } as never,
+  })
+  expect(await pane.find({ text: /Log/ })).toBeDefined()
+  expect(await pane.find({ text: /↑ \d+–31 of 31/ })).toBeDefined()
+
+  await pane.press({ key: 'hint-g' })
+  expect(await pane.find({ text: /^1–\d+ of 31 ↓$/ })).toBeDefined()
 })

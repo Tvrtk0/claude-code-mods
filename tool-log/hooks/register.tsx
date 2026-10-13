@@ -6,6 +6,7 @@ import type { AgentRow, LogEntry, LogGroup, Tab, TodoItem } from '../types'
 const PANE = 'tool-log'
 const FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏']
 const FRAME_MS = 120
+const NOTIFY_AFTER_MS = 30_000
 
 // The log's own background, a dark plum in place of the engine's grey.
 const PANE_BG = '#2a2133'
@@ -30,6 +31,9 @@ const agents = atom({ plugin: 'tool-log', key: 'agents' } as const, [])
 // Each tab's content signature when it was last in view: a tab whose
 // signature has moved on since shows as unread.
 const seen = atom({ plugin: 'tool-log', key: 'seen' } as const, {})
+// The panel scrolls itself so its tabs stay put: rows scrolled off the top,
+// per tab; null keeps the log pinned to its newest line.
+const scrollTop = atom({ plugin: 'tool-log', key: 'scrollTop' } as const, {})
 
 const TABS: Tab[] = ['log', 'files', 'agents', 'todo']
 const TAB_TITLES: Record<Tab, string> = {
@@ -300,12 +304,82 @@ async function markSeen($: EngineInterface, tabs: readonly Tab[]) {
   })
 }
 
+// The pane's pressable rows in drawing order, as the last drawing laid them
+// out, and the one j and k last moved to; a reload starts both over.
+let rowKeys: string[] = []
+let cursorKey: string | null = null
+
+// Keeps the focus ring on a row and that row in view.
+// What the last drawing laid out: each pressable row's first line, the
+// content's height, the window's height and how far it was scrolled.
+let layout = { tab: 'log' as Tab, rowLine: new Map<string, number>(), content: 0, view: 1, offset: 0 }
+
+const maxOffset = () => Math.max(0, layout.content - layout.view)
+
+async function setOffset($: EngineInterface, offset: number) {
+  const tab = layout.tab
+  const clamped = Math.max(0, Math.min(maxOffset(), Math.round(offset)))
+  // Remembered at once, so the next key counts from here, not from the
+  // last drawing.
+  layout = { ...layout, offset: clamped }
+  // The log at its bottom stays pinned there as new rows arrive.
+  const value = tab === 'log' && clamped >= maxOffset() ? null : clamped
+  await update($, scrollTop, prev => ({ ...(prev ?? {}), [tab]: value }))
+}
+
+async function scrollBy($: EngineInterface, rows: number) {
+  await setOffset($, layout.offset + rows)
+}
+
+// Keeps the focus ring on a row and scrolls the window to show it.
+async function focusRow($: EngineInterface, key: string) {
+  cursorKey = key
+  try {
+    await $.ui.focus({ requestId: PANE, key })
+  } catch {}
+  const line = layout.rowLine.get(key)
+  if (line === undefined) return
+  // Like vim's scrolloff: keep a margin of rows around the selected one, so a
+  // row height the layout guessed a little wrong still leaves it in view.
+  const margin = Math.max(1, Math.min(5, Math.floor(layout.view / 4)))
+  if (line < layout.offset + margin) await setOffset($, line - margin)
+  else if (line > layout.offset + layout.view - 1 - margin) await setOffset($, line - layout.view + 1 + margin)
+}
+
+// j and k: the first press lands on the newest row, at the bottom.
+async function moveCursor($: EngineInterface, by: number) {
+  if (rowKeys.length === 0) return
+  const at = cursorKey === null ? -1 : rowKeys.indexOf(cursorKey)
+  const next = at === -1 ? rowKeys.length - 1 : Math.min(rowKeys.length - 1, Math.max(0, at + by))
+  const key = rowKeys[next]
+  if (key !== undefined) await focusRow($, key)
+}
+
+// g and b: the top or the bottom, with the focus on the first or last row.
+async function jumpTo($: EngineInterface, end: 'first' | 'last') {
+  const key = end === 'first' ? rowKeys[0] : rowKeys[rowKeys.length - 1]
+  await setOffset($, end === 'first' ? 0 : Number.MAX_SAFE_INTEGER)
+  if (key === undefined) return
+  cursorKey = key
+  try {
+    await $.ui.focus({ requestId: PANE, key })
+  } catch {}
+}
+
 async function toggleExpanded($: EngineInterface, key: string) {
+  // Hold the window where it is, so the row does not move under the eye.
+  await setOffset($, layout.offset)
+  if (layout.tab === 'log' && layout.offset >= maxOffset()) {
+    const tab = layout.tab
+    await update($, scrollTop, prev => ({ ...(prev ?? {}), [tab]: layout.offset }))
+  }
   await update($, expanded, ids =>
     (ids ?? []).includes(key)
       ? (ids ?? []).filter(x => x !== key)
       : [...(ids ?? []), key].slice(-100),
   )
+  // The row grew or shrank under the focus: put it back on the same row.
+  await focusRow($, key)
 }
 
 // What the turn is doing when no tool runs, by the spinner's own mode.
@@ -329,7 +403,8 @@ function onLatest(list: LogGroup[] | undefined, at: number, fn: (g: LogGroup) =>
 const isLogOpen = async ($: EngineInterface) =>
   (await $.ui.panes()).some(pane => pane.id === PANE)
 
-const openPane = ($: EngineInterface) => $.ui.open({ id: PANE, title: 'Panel', columns: 56 })
+const openPane = ($: EngineInterface, focus?: true) =>
+  $.ui.open({ id: PANE, title: 'Panel', columns: 56, ...(focus ? { focus } : {}) })
 
 // [ panel ] and /panel: open the panel on the tab last in view, or close it.
 async function toggle($: EngineInterface) {
@@ -344,6 +419,23 @@ async function toggle($: EngineInterface) {
     if (tab === 'agents') await refreshAgents($)
     await openPane($)
   }
+}
+
+// ctrl+t: hand the panel the keyboard, opening it if it is closed; when it
+// already holds the keyboard, close it. Esc alone gives the keys back.
+async function focusPanel($: EngineInterface) {
+  const pane = (await $.ui.panes()).find(x => x.id === PANE)
+  const tab = await read($, tabAtom)
+  await markSeen($, [tab])
+
+  if (pane?.isFocused) {
+    await update($, focus, () => null)
+    await $.ui.close({ id: PANE })
+    return
+  }
+
+  if (pane === undefined && tab === 'agents') await refreshAgents($)
+  await openPane($, true)
 }
 
 // A chat line: open the log on its own prompt's group; pressed again while
@@ -470,6 +562,15 @@ export const register: Register = on => {
       await refreshAgents($)
     } catch {}
 
+    // A long turn ends with a desktop notification, for when you looked away.
+    try {
+      if (!e.isAborted && e.durationMs >= NOTIFY_AFTER_MS) {
+        const prompt = (await read($, groups)).at(-1)?.prompt ?? ''
+        const gist = prompt.length > 60 ? `${prompt.slice(0, 59)}…` : prompt
+        await $.ui.notify(gist === '' ? 'Done' : `Done: ${gist}`, { title: 'Claude Code' })
+      }
+    } catch {}
+
     return next(e)
   })
 
@@ -551,21 +652,24 @@ export const register: Register = on => {
       return next(e)
     }
 
-    const { Box, Button } = $.ui.resolve(e)
+    const { Box, Button, Text } = $.ui.resolve(e)
     const changes = changesOf(
       await read($, groups),
       e.props.calls.map(call => call.tool_use_id),
     )
+    const failed = e.props.calls.filter(call => call.isErrored).length
 
     return (
       <Box marginTop={1}>
         <Button
           key="log"
-          label={`› ${countLabel(e.props.calls.length)}${changes}`}
           plain
           dimColor
           onPress={() => focusOn($, e.props.calls.map(call => call.tool_use_id))}
-        />
+        >
+          {`› ${countLabel(e.props.calls.length)}${changes}`}
+          {failed > 0 && <Text color="error">{` · ${failed} failed`}</Text>}
+        </Button>
       </Box>
     )
   })
@@ -575,18 +679,15 @@ export const register: Register = on => {
       return next(e)
     }
 
-    const { Box, Button } = $.ui.resolve(e)
+    const { Box, Button, Text } = $.ui.resolve(e)
     const changes = changesOf(await read($, groups), [e.props.tool_use_id])
 
     return (
       <Box marginTop={1}>
-        <Button
-          key="log"
-          label={`› ${countLabel(1)}${changes}`}
-          plain
-          dimColor
-          onPress={() => focusOn($, [e.props.tool_use_id])}
-        />
+        <Button key="log" plain dimColor onPress={() => focusOn($, [e.props.tool_use_id])}>
+          {`› ${countLabel(1)}${changes}`}
+          {e.props.isErrored && <Text color="error"> · failed</Text>}
+        </Button>
       </Box>
     )
   })
@@ -612,7 +713,10 @@ export const register: Register = on => {
     const now = await read($, tick)
     const latest = (await read($, groups)).at(-1)
     const running = latest?.entries.filter(x => x.status === 'running').at(-1)
-    const activity = running?.activity ?? MODE_ACTIVITY[e.props.mode] ?? ''
+    const plan = await read($, todos)
+    const planDone = plan.filter(x => x.status === 'completed').length
+    const progress = plan.length > 0 && planDone < plan.length ? `${planDone}/${plan.length} · ` : ''
+    const activity = progress + (running?.activity ?? MODE_ACTIVITY[e.props.mode] ?? '')
     const room = Math.max(10, (e.viewport?.columns ?? 80) - 14)
 
     // A blank line above keeps it off the tool line; the band spaces itself.
@@ -644,6 +748,17 @@ export const register: Register = on => {
     return (
       <Box>
         <Button key="log-toggle" label="panel" dimColor onPress={() => toggle($)} />
+        <Text> </Text>
+        {/* The keyboard way in: ctrl+t in ~/.claude/keybindings.json is bound
+            to an engine action only the diff panel handles, free at the prompt. */}
+        <Button
+          key="panel-key"
+          label="ctrl+t"
+          plain
+          dimColor
+          action="app:toggleDiffPreSession"
+          onPress={() => focusPanel($)}
+        />
         {hasDiff && <Text> </Text>}
         {hasDiff && (
           <Button
@@ -667,23 +782,11 @@ export const register: Register = on => {
     const open = new Set(await read($, expanded))
     const bodyRows = e.props.scroll.bodyRows
     const columns = Math.max(20, e.props.bodyColumns - 2)
-    const rows = Math.max(4, bodyRows - 2)
-
-    // Paints the whole body, docked floor to ceiling; inline the frame fits.
-    const painted = (child: RenderNode) => (
-      <Box
-        backgroundColor={PANE_BG}
-        width={e.props.bodyColumns}
-        height={e.props.placement === 'dock' ? bodyRows : undefined}
-        paddingX={1}
-        paddingY={1}
-        flexDirection="column"
-      >
-        {child}
-      </Box>
-    )
     const clip = (text: string, width: number) =>
       text.length > width ? `${text.slice(0, width - 1)}…` : text
+    const lines = (text: string, width: number) =>
+      text.split('\n').reduce((n, l) => n + Math.max(1, Math.ceil(l.length / Math.max(1, width))), 0)
+    const patchLines = (patch: string) => patch.replace(/\n$/, '').split('\n').length
 
     const tab = await read($, tabAtom)
     const frame = FRAMES[now.frame] ?? FRAMES[0]
@@ -691,49 +794,129 @@ export const register: Register = on => {
     const current = signatures(list, await read($, todos), await read($, agents))
     // Active: orange. Something new since last viewed: bright. Else dim.
     const isNew = (t: Tab) => t !== tab && current[t] !== '' && current[t] !== (lastSeen[t] ?? '')
-    const tabRow = (
-      <Box>
-        {TABS.map(t => (
-          <Box key={`tab-${t}`} marginRight={2}>
-            <Button
-              key={`tab-${t}`}
-              plain
-              dimColor={t !== tab && !isNew(t)}
-              onPress={async () => {
-                await markSeen($, [tab, t])
-                await update($, tabAtom, () => t)
-              }}
-            >
-              {t === tab ? (
-                <Text bold color="claude">{TAB_TITLES[t]}</Text>
-              ) : isNew(t) ? (
-                <Text bold>{TAB_TITLES[t]}</Text>
-              ) : (
-                TAB_TITLES[t]
-              )}
-            </Button>
-          </Box>
-        ))}
+    const step = (by: number) => async () => {
+      const next = TABS[(TABS.indexOf(tab) + by + TABS.length) % TABS.length] ?? tab
+      cursorKey = null
+      await markSeen($, [tab, next])
+      await update($, tabAtom, () => next)
+    }
+    const key = (k: string, label: string, onPress: () => unknown) => (
+      <Box key={`hintbox-${k}`} marginRight={2}>
+        <Button key={`hint-${k}`} hotkey={k} label={label} plain onPress={onPress} />
       </Box>
     )
-    const framed = (child: RenderNode) =>
-      painted(
-        <Box flexDirection="column" gap={1}>
-          {tabRow}
-          {child}
-        </Box>,
+
+    // The tabs and, while the panel holds the keyboard, its keys: drawn above
+    // the scrolled window, so they never scroll away.
+    const isFocused = e.props.isFocused
+    const header = (
+      <Box flexDirection="column">
+        <Box>
+          {TABS.map((t, i) => (
+            <Box key={`tabbox-${t}`} marginRight={2}>
+              <Button
+                key={`tab-${t}`}
+                hotkey={String(i + 1)}
+                plain
+                dimColor={t !== tab && !isNew(t)}
+                onPress={async () => {
+                  cursorKey = null
+                  await markSeen($, [tab, t])
+                  await update($, tabAtom, () => t)
+                }}
+              >
+                {t === tab ? (
+                  <Text bold color="claude">{TAB_TITLES[t]}</Text>
+                ) : isNew(t) ? (
+                  <Text bold>{TAB_TITLES[t]}</Text>
+                ) : (
+                  TAB_TITLES[t]
+                )}
+              </Button>
+            </Box>
+          ))}
+        </Box>
+        {isFocused && (
+          <Box flexDirection="column" marginTop={1}>
+            <Box>
+              {key('h', 'prev', step(-1))}
+              {key('l', 'next', step(1))}
+              {key('j', 'down', () => moveCursor($, 1))}
+              {key('k', 'up', () => moveCursor($, -1))}
+            </Box>
+            <Box>
+              {key('d', 'half down', () => scrollBy($, Math.max(1, Math.floor(layout.view / 2))))}
+              {key('u', 'half up', () => scrollBy($, -Math.max(1, Math.floor(layout.view / 2))))}
+              {key('g', 'top', () => jumpTo($, 'first'))}
+              {/* b for the bottom: a hotkey cannot tell shift+g from g */}
+              {key('b', 'bottom', () => jumpTo($, 'last'))}
+            </Box>
+          </Box>
+        )}
+      </Box>
+    )
+    const headerRows = isFocused ? 4 : 1
+    // Body rows less the padding, the header and the gap under it.
+    const view = Math.max(3, bodyRows - 2 - headerRows - 1)
+
+    // Lays the content out in a window of `view` rows, scrolled by this tab's
+    // offset, and records where each pressable row sits for j, k and focus.
+    const windowed = async (
+      content: RenderNode,
+      height: number,
+      rowLine: Map<string, number>,
+      keys: string[] = [],
+    ) => {
+      const stored = (await read($, scrollTop))[tab]
+      const max = Math.max(0, height - view)
+      const fallback = tab === 'log' ? max : 0
+      const offset = Math.max(0, Math.min(max, stored === null || stored === undefined ? fallback : stored))
+      // Both at once, after the last await: a key pressed mid-drawing never
+      // sees one without the other.
+      layout = { tab, rowLine, content: height, view, offset }
+      rowKeys = keys
+      const more = offset > 0 ? '↑ ' : ''
+      const less = offset < max ? ' ↓' : ''
+
+      return (
+        <Box
+          backgroundColor={PANE_BG}
+          width={e.props.bodyColumns}
+          height={e.props.placement === 'dock' ? bodyRows : undefined}
+          paddingX={1}
+          paddingY={1}
+          flexDirection="column"
+        >
+          {header}
+          <Box height={1}>
+            {(more !== '' || less !== '') && (
+              <Text dimColor>
+                {more}
+                {offset + 1}–{Math.min(height, offset + view)} of {height}
+                {less}
+              </Text>
+            )}
+          </Box>
+          <Box height={view} overflow="hidden" flexDirection="column">
+            <Box marginTop={-offset} flexDirection="column" flexShrink={0}>
+              {content}
+            </Box>
+          </Box>
+        </Box>
       )
+    }
 
     if (tab === 'todo') {
       const plan = await read($, todos)
 
       if (plan.length === 0) {
-        return framed(<Text dimColor>No plan yet. Claude writes one for longer tasks.</Text>)
+        return windowed(<Text dimColor>No plan yet. Claude writes one for longer tasks.</Text>, 1, new Map())
       }
 
       const done = plan.filter(t => t.status === 'completed').length
+      const height = 2 + plan.reduce((n, t) => n + lines(t.status === 'in_progress' ? (t.activeForm ?? t.content) : t.content, columns - 2), 0)
 
-      return framed(
+      return windowed(
         <Box flexDirection="column">
           <Text dimColor>
             {done}/{plan.length} done
@@ -762,35 +945,46 @@ export const register: Register = on => {
             </Box>
           ))}
         </Box>,
+        height,
+        new Map(),
       )
     }
 
     if (tab === 'files') {
       const files = filesOf(list)
+      const fileKeys = files.map(f => `f:${f.path}`)
 
       if (files.length === 0) {
-        return framed(<Text dimColor>No files changed yet.</Text>)
+        return windowed(<Text dimColor>No files changed yet.</Text>, 1, new Map())
       }
 
-      return framed(
+      const rowLine = new Map<string, number>()
+      let y = 0
+      for (const f of files) {
+        const k = `f:${f.path}`
+        rowLine.set(k, y)
+        y += 2 + (open.has(k) ? patchLines(f.patch) : 0) + 1
+      }
+
+      return windowed(
         <Box flexDirection="column">
           {files.map(f => {
-            const key = `f:${f.path}`
+            const k = `f:${f.path}`
 
             return (
-              <Box key={key} flexDirection="column" marginBottom={1}>
-                <Button key={key} plain onPress={() => toggleExpanded($, key)}>
+              <Box key={`row-${k}`} flexDirection="column" marginBottom={1}>
+                <Button key={k} plain onPress={() => toggleExpanded($, k)}>
                   <Text bold>{clip(basename(f.path), columns - 24)}</Text>{' '}
                   <Text color="success">+{f.added}</Text>{' '}
                   <Text color="error">−{f.removed}</Text>
-                  <Text dimColor> {open.has(key) ? '▾' : '▸'}</Text>
+                  <Text dimColor> {open.has(k) ? '▾' : '▸'}</Text>
                 </Button>
                 <Box marginLeft={2}>
                   <Text dimColor wrap="truncate-start">
                     {home(dirOf(f.path))} · {f.edits} {f.edits === 1 ? 'edit' : 'edits'}
                   </Text>
                 </Box>
-                {open.has(key) && (
+                {open.has(k) && (
                   <Box marginLeft={2} width={columns - 2}>
                     <Code source={f.patch} format="diff" path={f.path} wrap="truncate-end" />
                   </Box>
@@ -799,6 +993,9 @@ export const register: Register = on => {
             )
           })}
         </Box>,
+        y,
+        rowLine,
+        fileKeys,
       )
     }
 
@@ -806,10 +1003,12 @@ export const register: Register = on => {
       const crew = await read($, agents)
 
       if (crew.length === 0) {
-        return framed(<Text dimColor>No subagents in this session.</Text>)
+        return windowed(<Text dimColor>No subagents in this session.</Text>, 1, new Map())
       }
 
-      return framed(
+      const height = crew.reduce((n, a) => n + 3 + (!ENDED.has(a.status) && a.lastStep !== '' ? 1 : 0), 0)
+
+      return windowed(
         <Box flexDirection="column">
           {[...crew].reverse().map(a => {
             const isLive = !ENDED.has(a.status)
@@ -852,6 +1051,8 @@ export const register: Register = on => {
             )
           })}
         </Box>,
+        height,
+        new Map(),
       )
     }
 
@@ -859,33 +1060,37 @@ export const register: Register = on => {
     const all = list.filter(g => g.entries.length > 0 || g === list[list.length - 1])
     const at = focused === null ? -1 : all.findIndex(g => g.id === focused)
     // Focused, the log ends at that group: it sits at the bottom, older above.
-    const shown = at === -1 ? all : all.slice(0, at + 1)
+    const shown = (at === -1 ? all : all.slice(0, at + 1)).slice(-40)
     const target = at === -1 ? undefined : all[at]
 
     if (shown.length === 0) {
-      return framed(<Text dimColor>No tool calls yet.</Text>)
+      return windowed(<Text dimColor>No tool calls yet.</Text>, 1, new Map())
     }
 
-    // Newest groups that fit: a header, a line per call, a command line under
-    // each failure, and a blank line between groups.
-    const fitted: LogGroup[] = []
-    let used = target === undefined ? 2 : 4
-    for (const g of [...shown].reverse()) {
-      const height =
-        2 +
-        g.entries.length +
-        g.entries.filter(x => x.status === 'error').length +
-        g.entries
-          .filter(x => open.has(x.id))
-          .reduce((sum, x) => sum + (x.patch ?? x.command ?? '').split('\n').length, 0)
-      if (fitted.length > 0 && used + height > rows) break
-      fitted.unshift(g)
-      used += height
-    }
+    const pressable = (x: LogEntry) => (x.command !== undefined || x.patch !== undefined) && x.status === 'ok'
+    const logKeys = shown.flatMap(g => g.entries.filter(pressable).map(x => x.id))
+
+    // Where each row lands: a group is its header, a line per call, what an
+    // open or failed call unfolds, and a blank line before the next group.
+    const rowLine = new Map<string, number>()
+    let y = target === undefined ? 0 : 2
+    shown.forEach((g, gi) => {
+      if (gi > 0) y += 1
+      y += 1
+      for (const x of g.entries) {
+        rowLine.set(x.id, y)
+        // The row's own line, longer when its label and counts wrap.
+        const head = (x.patch !== undefined ? `${x.tool} ` : '') + x.label + (x.patch !== undefined ? ` +${x.added ?? 0} −${x.removed ?? 0}` : '') + ' ▸'
+        y += lines(head, columns - 4)
+        if (x.patch !== undefined && open.has(x.id)) y += patchLines(x.patch)
+        if (x.command !== undefined && x.status === 'error') y += 1
+        else if (x.command !== undefined && open.has(x.id)) y += lines(x.command, columns - 6)
+      }
+    })
 
     const latest = list[list.length - 1]
 
-    return framed(
+    return windowed(
       <Box flexDirection="column" gap={1}>
         {target !== undefined && (
           <Box>
@@ -902,7 +1107,7 @@ export const register: Register = on => {
             />
           </Box>
         )}
-        {fitted.map(g => {
+        {shown.map(g => {
           const isOld = target === undefined ? g !== latest : g !== target
           const meta = `${clockTime(g.startedAt).slice(0, 5)} · ${g.entries.length}`
           const promptWidth = Math.max(8, columns - meta.length - 4)
@@ -921,31 +1126,24 @@ export const register: Register = on => {
                 <Text dimColor> {meta}</Text>
               </Box>
               {g.entries.map(entry => (
-                <Box key={entry.id} flexDirection="column">
+                <Box key={`row-${entry.id}`} flexDirection="column">
                   <Box>
                     <Box width={4} flexShrink={0}>
                       <Text>  </Text>
                       {entry.status === 'running' ? (
-                        <Text color="claude">{FRAMES[now.frame] ?? FRAMES[0]}</Text>
+                        <Text color="claude">{frame}</Text>
                       ) : entry.status === 'ok' ? (
                         <Text color="success" dimColor={isOld}>✓</Text>
                       ) : (
                         <Text color="error">✗</Text>
                       )}
                     </Box>
-                    {(entry.command !== undefined || entry.patch !== undefined) &&
-                    entry.status === 'ok' ? (
+                    {pressable(entry) ? (
                       <Button
                         key={entry.id}
                         plain
                         dimColor={isOld}
-                        onPress={() =>
-                          update($, expanded, ids =>
-                            (ids ?? []).includes(entry.id)
-                              ? (ids ?? []).filter(x => x !== entry.id)
-                              : [...(ids ?? []), entry.id].slice(-100),
-                          )
-                        }
+                        onPress={() => toggleExpanded($, entry.id)}
                       >
                         {entry.patch !== undefined && <Text bold>{entry.tool} </Text>}
                         {clip(entry.label, columns - 20)}
@@ -992,7 +1190,10 @@ export const register: Register = on => {
             </Box>
           )
         })}
-      </Box>
+      </Box>,
+      y,
+      rowLine,
+      logKeys,
     )
   })
 }

@@ -4,7 +4,7 @@ const USAGE = {
   startedAt: 0,
   context: { tokens: 84_000, window: 200_000, percent: 42 },
   rateLimits: [
-    { kind: 'five_hour', percentUsed: 31 },
+    { kind: 'five_hour', percentUsed: 31, resetsAt: '2026-10-13T14:10:00Z' },
     { kind: 'seven_day', percentUsed: 64 },
   ],
   cost: { usd: 0.84 },
@@ -13,6 +13,7 @@ const USAGE = {
 for (const surface of ['terminal', 'desktop'] as const) {
   test(`band shows context, 5h and 7d meters on ${surface}`, async ($, on) => {
     on('session.usage', () => ({ value: USAGE }))
+    on('clock.now', () => ({ value: Date.parse('2026-10-13T12:00:00Z') }) as never)
     on('ui.render', () => ({ type: 'Box', props: {}, children: [] }))
     on('turn.complete', (_, e) => ({ text: e.answer }))
 
@@ -35,6 +36,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
     expect(await ui.find({ text: ' 31%' })).toBeDefined()
     expect(await ui.find({ text: ' 64%' })).toBeDefined()
     expect(await ui.find({ text: '7d ' })).toBeDefined()
+    expect(await ui.find({ text: ' 2h 10m' })).toBeDefined()
     expect(await ui.find({ text: /\$/ })).toBeUndefined()
     expect(await ui.find({ text: /84k/ })).toBeUndefined()
   })

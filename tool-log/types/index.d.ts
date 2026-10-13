@@ -52,6 +52,7 @@ declare module 'claude-code' {
       todos: TodoItem[]
       agents: AgentRow[]
       seen: Partial<Record<Tab, string>>
+      scrollTop: Partial<Record<Tab, number | null>>
     }
   }
 }

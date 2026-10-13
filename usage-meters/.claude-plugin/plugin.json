@@ -1,6 +1,6 @@
 {
   "name": "usage-meters",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "A compact band above the prompt with context, 5-hour and weekly usage meters.",
   "author": {
     "name": "Tvrtk0"
