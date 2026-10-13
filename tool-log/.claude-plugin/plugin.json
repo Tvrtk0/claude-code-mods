@@ -1,7 +1,7 @@
 {
   "name": "tool-log",
-  "version": "1.3.0",
-  "description": "Moves tool calls out of the chat into a live side log grouped by prompt, with file diffs on click, and replaces the spinner with a minimal animated one.",
+  "version": "1.6.0",
+  "description": "A side panel with a live tool log grouped by prompt, the plan, changed files with diffs and subagents; folds tool calls in the chat and replaces the spinner with a minimal one.",
   "author": {
     "name": "Tvrtk0"
   },

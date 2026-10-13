@@ -1,6 +1,6 @@
 {
   "name": "readable-width",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Caps reply and prompt text at 80 columns while code blocks and tables keep the full width, and highlights your own prompts.",
   "author": {
     "name": "Tvrtk0"

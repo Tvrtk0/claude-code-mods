@@ -154,3 +154,64 @@ test('a chat line focuses its prompt until the next prompt', async ($, on) => {
   await $.prompt.submit({ text: 'third prompt', origin: { kind: 'composer' }, wait: false } as never)
   expect(await pane.find({ text: /viewing:/ })).toBeUndefined()
 })
+
+const PANE_PROPS = { title: 'Log', isFocused: false, bodyColumns: 56, placement: 'dock', scroll: { bodyRows: 30 } } as never
+
+test('keeps the plan from TodoWrite in the Todo tab', async ($, on) => {
+  on('ui.render', () => ENGINE)
+  on('clock.now', () => ({ value: 1_000 }) as never)
+  on('tool.call', () => ({ result: 'ok' }) as never)
+  on('ui.panes', () => ({ value: [] }) as never)
+  on('ui.open', () => ({ value: { isPlaced: true } }) as never)
+
+  await $.tool.call({
+    tool: 'TodoWrite',
+    todos: [
+      { content: 'Read the code', status: 'completed', activeForm: 'Reading the code' },
+      { content: 'Write the tabs', status: 'in_progress', activeForm: 'Writing the tabs' },
+      { content: 'Push', status: 'pending', activeForm: 'Pushing' },
+    ],
+    tool_use_id: 't',
+  } as never)
+
+  const band = await $.ui.mount({
+    plugin: 'tool-log',
+    surface: 'terminal',
+    component: 'AbovePrompt',
+    props: { hasSurvey: false, isWorking: false, maxRows: 3 } as never,
+  })
+  await band.press({ key: 'log-toggle' })
+
+  const pane = await $.ui.mount({ plugin: 'tool-log', surface: 'terminal', component: 'Pane', requestId: 'tool-log', props: PANE_PROPS })
+  await pane.press({ key: 'tab-todo' })
+  expect(await pane.find({ text: '1/3 done' })).toBeDefined()
+  expect(await pane.find({ text: 'Writing the tabs' })).toBeDefined()
+  expect(await pane.find({ text: 'Push' })).toBeDefined()
+})
+
+test('tracks a subagent and keeps its calls out of the log', async ($, on) => {
+  on('ui.render', () => ENGINE)
+  on('clock.now', () => ({ value: 1_000 }) as never)
+  on('tool.call', () => ({ result: 'ok' }) as never)
+  on('agent.spawn', () => ({ model: 'haiku', agentId: 'ag1' }) as never)
+  on('agent.list', () => ({ value: [{ id: 'ag1', description: 'Review PR 12', type: 'Explore', status: 'running' }] }) as never)
+  on('ui.panes', () => ({ value: [] }) as never)
+  on('ui.open', () => ({ value: { isPlaced: true } }) as never)
+
+  await $.agent.spawn({ tool_use_id: 'x', prompt: 'p', description: 'Review PR 12', subagentType: 'Explore' } as never)
+  await $.tool.call({ tool: 'Read', file_path: '/a/b.ts', tool_use_id: 's1', agentId: 'ag1' } as never)
+
+  const band = await $.ui.mount({
+    plugin: 'tool-log',
+    surface: 'terminal',
+    component: 'AbovePrompt',
+    props: { hasSurvey: false, isWorking: false, maxRows: 3 } as never,
+  })
+  await band.press({ key: 'log-toggle' })
+
+  const pane = await $.ui.mount({ plugin: 'tool-log', surface: 'terminal', component: 'Pane', requestId: 'tool-log', props: PANE_PROPS })
+  await pane.press({ key: 'tab-agents' })
+  expect(await pane.find({ text: 'Review PR 12' })).toBeDefined()
+  expect(await pane.find({ text: /1 tool/ })).toBeDefined()
+  expect(await pane.find({ text: '› Reading b.ts' })).toBeDefined()
+})

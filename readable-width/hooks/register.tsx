@@ -44,11 +44,14 @@ function segment(markdown: string): Segment[] {
       continue
     }
 
-    const opens = /^(`{3,}|~{3,})/.exec(trimmed)
+    // Only code keeps the full width: a fence that names a language other
+    // than plain text. An unlabelled or text fence wraps like prose.
+    const opens = /^(`{3,}|~{3,})\s*([\w+#.-]*)/.exec(trimmed)
     if (opens) {
       flush()
       fence = opens[1] ?? '```'
-      isWide = true
+      const lang = (opens[2] ?? '').toLowerCase()
+      isWide = lang !== '' && !['text', 'txt', 'plain', 'plaintext', 'markdown', 'md'].includes(lang)
       lines.push(line)
       continue
     }

@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, RenderNode, Timer } from 'claude-code'
 
-import type { LogEntry, LogGroup } from '../types'
+import type { AgentRow, LogEntry, LogGroup, Tab, TodoItem } from '../types'
 
 const PANE = 'tool-log'
 const FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏']
@@ -22,7 +22,23 @@ const PATCH_LIMIT = 20_000
 const tick = atom({ plugin: 'tool-log', key: 'tick' } as const, {
   frame: 0,
   elapsedMs: 0,
+  now: 0,
 })
+const tabAtom = atom({ plugin: 'tool-log', key: 'tab' } as const, 'log')
+const todos = atom({ plugin: 'tool-log', key: 'todos' } as const, [])
+const agents = atom({ plugin: 'tool-log', key: 'agents' } as const, [])
+// Each tab's content signature when it was last in view: a tab whose
+// signature has moved on since shows as unread.
+const seen = atom({ plugin: 'tool-log', key: 'seen' } as const, {})
+
+const TABS: Tab[] = ['log', 'files', 'agents', 'todo']
+const TAB_TITLES: Record<Tab, string> = {
+  log: 'Log',
+  todo: 'Todo',
+  files: 'Files',
+  agents: 'Agents',
+}
+const ENDED = new Set<AgentRow['status']>(['completed', 'failed', 'killed'])
 
 const pad = (n: number) => String(n).padStart(2, '0')
 
@@ -41,6 +57,8 @@ const elapsed = (ms: number) => {
 const countLabel = (n: number) => `${n} ${n === 1 ? 'tool' : 'tools'}`
 
 const basename = (path: string) => path.split('/').pop() ?? path
+
+const dirOf = (path: string) => path.slice(0, path.lastIndexOf('/')) || '/'
 
 const home = (text: string) => text.replace(/\/Users\/[^/\s]+/g, '~')
 
@@ -163,6 +181,133 @@ function changesOf(all: LogGroup[], ids: readonly (string | undefined)[]) {
   return ` · ${files.size} ${files.size === 1 ? 'file' : 'files'} changed +${added} −${removed}`
 }
 
+type FileChange = {
+  path: string
+  added: number
+  removed: number
+  edits: number
+  patch: string
+}
+
+// Every file the session's calls changed, newest first, its hunks joined.
+function filesOf(all: LogGroup[]): FileChange[] {
+  const byPath = new Map<string, FileChange>()
+
+  for (const g of all) {
+    for (const x of g.entries) {
+      if (x.patch === undefined || x.path === undefined) continue
+      const prev = byPath.get(x.path)
+      byPath.delete(x.path)
+      const patch = (prev?.patch ?? '') + x.patch
+      byPath.set(x.path, {
+        path: x.path,
+        added: (prev?.added ?? 0) + (x.added ?? 0),
+        removed: (prev?.removed ?? 0) + (x.removed ?? 0),
+        edits: (prev?.edits ?? 0) + 1,
+        patch: patch.length > PATCH_LIMIT * 3 ? (prev?.patch ?? x.patch) : patch,
+      })
+    }
+  }
+
+  return [...byPath.values()].reverse()
+}
+
+// The plan Claude keeps with TodoWrite, or with TaskCreate and TaskUpdate.
+async function trackTodos($: EngineInterface, tool: string, input: unknown, result: unknown) {
+  const fields = (input ?? {}) as Record<string, unknown>
+  const text = (key: string) => (typeof fields[key] === 'string' ? (fields[key] as string) : undefined)
+  const isStatus = (v: unknown): v is TodoItem['status'] =>
+    v === 'pending' || v === 'in_progress' || v === 'completed'
+
+  if (tool === 'TodoWrite' && Array.isArray(fields.todos)) {
+    const items: TodoItem[] = (fields.todos as Record<string, unknown>[]).map((t, i) => ({
+      id: `t${i}`,
+      content: typeof t.content === 'string' ? t.content : '',
+      activeForm: typeof t.activeForm === 'string' ? t.activeForm : undefined,
+      status: isStatus(t.status) ? t.status : 'pending',
+    }))
+    await update($, todos, () => items)
+    return
+  }
+
+  if (tool === 'TaskCreate') {
+    const id = ((result ?? {}) as { task?: { id?: unknown } }).task?.id
+    const subject = text('subject')
+    if (typeof id !== 'string' || subject === undefined) return
+    const item: TodoItem = { id, content: subject, activeForm: text('activeForm'), status: 'pending' }
+    await update($, todos, list => [...(list ?? []).filter(x => x.id !== id), item])
+    return
+  }
+
+  const id = text('taskId')
+  if (tool !== 'TaskUpdate' || id === undefined) return
+
+  if (fields.status === 'deleted') {
+    await update($, todos, list => (list ?? []).filter(x => x.id !== id))
+    return
+  }
+
+  await update($, todos, list =>
+    (list ?? []).map(x =>
+      x.id !== id
+        ? x
+        : {
+            ...x,
+            content: text('subject') ?? x.content,
+            activeForm: text('activeForm') ?? x.activeForm,
+            status: isStatus(fields.status) ? fields.status : x.status,
+          },
+    ),
+  )
+}
+
+// Brings each subagent's status up to date from the engine's roster.
+async function refreshAgents($: EngineInterface) {
+  if ((await read($, agents)).length === 0) return
+
+  const live = new Map((await $.agent.list()).map(a => [a.id, a.status]))
+  const now = await $.clock.now()
+
+  await update($, agents, list =>
+    (list ?? []).map(row => {
+      const status = live.get(row.id) ?? row.status
+
+      return { ...row, status, endedAt: ENDED.has(status) ? (row.endedAt ?? now) : undefined }
+    }),
+  )
+  await update($, tick, prev => ({ frame: prev?.frame ?? 0, elapsedMs: prev?.elapsedMs ?? 0, now }))
+}
+
+function signatures(
+  all: LogGroup[],
+  plan: TodoItem[],
+  crew: AgentRow[],
+): Record<Tab, string> {
+  return {
+    log: String(all.reduce((n, g) => n + g.entries.length, 0)),
+    todo: plan.map(t => t.id + t.status).join(','),
+    files: filesOf(all).map(f => f.path + f.edits).join(','),
+    agents: crew.map(a => a.id + a.status).join(','),
+  }
+}
+
+async function markSeen($: EngineInterface, tabs: readonly Tab[]) {
+  const now = signatures(await read($, groups), await read($, todos), await read($, agents))
+  await update($, seen, prev => {
+    const next = { ...(prev ?? {}) }
+    for (const t of tabs) next[t] = now[t]
+    return next
+  })
+}
+
+async function toggleExpanded($: EngineInterface, key: string) {
+  await update($, expanded, ids =>
+    (ids ?? []).includes(key)
+      ? (ids ?? []).filter(x => x !== key)
+      : [...(ids ?? []), key].slice(-100),
+  )
+}
+
 // What the turn is doing when no tool runs, by the spinner's own mode.
 const MODE_ACTIVITY: Record<string, string> = {
   requesting: 'Waiting for model',
@@ -184,14 +329,20 @@ function onLatest(list: LogGroup[] | undefined, at: number, fn: (g: LogGroup) =>
 const isLogOpen = async ($: EngineInterface) =>
   (await $.ui.panes()).some(pane => pane.id === PANE)
 
-// [ log ] and /log: open the log on the newest prompt, or close it.
+const openPane = ($: EngineInterface) => $.ui.open({ id: PANE, title: 'Panel', columns: 56 })
+
+// [ panel ] and /panel: open the panel on the tab last in view, or close it.
 async function toggle($: EngineInterface) {
   await update($, focus, () => null)
+
+  const tab = await read($, tabAtom)
+  await markSeen($, [tab])
 
   if (await isLogOpen($)) {
     await $.ui.close({ id: PANE })
   } else {
-    await $.ui.open({ id: PANE, title: 'Log', columns: 56 })
+    if (tab === 'agents') await refreshAgents($)
+    await openPane($)
   }
 }
 
@@ -201,20 +352,24 @@ async function focusOn($: EngineInterface, ids: readonly (string | undefined)[])
   const wanted = new Set(ids)
   const group = (await read($, groups)).find(g => g.entries.some(x => wanted.has(x.id)))
   const isOpen = await isLogOpen($)
+  const prevTab = await read($, tabAtom)
+  const isOnLog = prevTab === 'log'
+  await markSeen($, [prevTab, 'log'])
+  await update($, tabAtom, () => 'log')
 
   if (group === undefined) {
-    if (!isOpen) await $.ui.open({ id: PANE, title: 'Log', columns: 56 })
+    if (!isOpen) await openPane($)
     return
   }
 
-  if (isOpen && (await read($, focus)) === group.id) {
+  if (isOpen && isOnLog && (await read($, focus)) === group.id) {
     await update($, focus, () => null)
     await $.ui.close({ id: PANE })
     return
   }
 
   await update($, focus, () => group.id)
-  if (!isOpen) await $.ui.open({ id: PANE, title: 'Log', columns: 56 })
+  if (!isOpen) await openPane($)
 }
 
 // The running turn's start and its animation timer; a reload starts over.
@@ -227,10 +382,19 @@ async function start($: EngineInterface) {
   startedAt = await $.clock.now()
   timer = $.clock.every(FRAME_MS, async () => {
     const now = await $.clock.now()
-    await update($, tick, prev => ({
-      frame: ((prev?.frame ?? 0) + 1) % FRAMES.length,
-      elapsedMs: now - (startedAt ?? now),
-    }))
+    let frame = 0
+    await update($, tick, prev => {
+      frame = ((prev?.frame ?? 0) + 1) % FRAMES.length
+
+      return { frame, elapsedMs: now - (startedAt ?? now), now }
+    })
+
+    // About once a second, the subagents' status too.
+    if (frame === 0) {
+      try {
+        await refreshAgents($)
+      } catch {}
+    }
   })
 }
 
@@ -243,8 +407,8 @@ function stop() {
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     await $.command.register({
-      name: 'log',
-      description: 'Toggle the tool log',
+      name: 'panel',
+      description: 'Toggle the side panel: log, todo, files, agents',
     })
     const started = await next(e)
 
@@ -263,7 +427,7 @@ export const register: Register = on => {
     return started
   })
 
-  on('command.run', { command: 'log' }, async $ => {
+  on('command.run', { command: 'panel' }, async $ => {
     await toggle($)
 
     return { text: '' }
@@ -285,6 +449,9 @@ export const register: Register = on => {
         // A new prompt takes the log back to what is happening now.
         await update($, focus, () => null)
       }
+
+      // A task notification often means a background subagent ended.
+      await refreshAgents($)
     } catch {}
 
     return next(e)
@@ -299,13 +466,51 @@ export const register: Register = on => {
   on('turn.complete', async ($, e, next) => {
     stop()
 
+    try {
+      await refreshAgents($)
+    } catch {}
+
     return next(e)
+  })
+
+  on('agent.spawn', async ($, e, next) => {
+    const spawned = await next(e)
+
+    try {
+      if (spawned.deny === undefined && spawned.agentId !== undefined) {
+        const row: AgentRow = {
+          id: spawned.agentId,
+          description: e.description,
+          type: e.subagentType,
+          startedAt: await $.clock.now(),
+          status: 'running',
+          lastStep: '',
+          tools: 0,
+        }
+        await update($, agents, list => [...(list ?? []).filter(a => a.id !== row.id), row].slice(-30))
+      }
+    } catch {}
+
+    return spawned
   })
 
   // The log must never stand in a call's way: its own failures are swallowed
   // and next(e) runs exactly once either way.
   on('tool.call', async ($, e, next) => {
     const id = e.tool_use_id
+
+    // A subagent's calls count toward its row in Agents, not the log.
+    if (e.agentId !== undefined) {
+      const agentId = e.agentId
+      try {
+        const step = describe(e.tool, e).activity
+        await update($, agents, list =>
+          (list ?? []).map(a => (a.id === agentId ? { ...a, tools: a.tools + 1, lastStep: step } : a)),
+        )
+      } catch {}
+
+      return next(e)
+    }
 
     try {
       const entry: LogEntry = {
@@ -333,6 +538,7 @@ export const register: Register = on => {
           ),
         })),
       )
+      if (status === 'ok') await trackTodos($, e.tool, e, ran.result)
     } catch {}
 
     return ran
@@ -385,6 +591,18 @@ export const register: Register = on => {
     )
   })
 
+  // A standalone call's result block draws apart from its row: it lives in
+  // the log too, so the chat drops it.
+  on('ui.render', { component: 'ToolResult' }, ($, e, next) => {
+    if (e.surface !== 'terminal') {
+      return next(e)
+    }
+
+    const { Box } = $.ui.resolve(e)
+
+    return <Box />
+  })
+
   on('ui.render', { component: 'Spinner' }, async ($, e, next) => {
     if (e.surface !== 'terminal') {
       return next(e)
@@ -425,7 +643,7 @@ export const register: Register = on => {
     // No sizing props here: the engine refuses its own node under a sized Box.
     return (
       <Box>
-        <Button key="log-toggle" label="log" dimColor onPress={() => toggle($)} />
+        <Button key="log-toggle" label="panel" dimColor onPress={() => toggle($)} />
         {hasDiff && <Text> </Text>}
         {hasDiff && (
           <Button
@@ -467,6 +685,176 @@ export const register: Register = on => {
     const clip = (text: string, width: number) =>
       text.length > width ? `${text.slice(0, width - 1)}…` : text
 
+    const tab = await read($, tabAtom)
+    const frame = FRAMES[now.frame] ?? FRAMES[0]
+    const lastSeen = await read($, seen)
+    const current = signatures(list, await read($, todos), await read($, agents))
+    // Active: orange. Something new since last viewed: bright. Else dim.
+    const isNew = (t: Tab) => t !== tab && current[t] !== '' && current[t] !== (lastSeen[t] ?? '')
+    const tabRow = (
+      <Box>
+        {TABS.map(t => (
+          <Box key={`tab-${t}`} marginRight={2}>
+            <Button
+              key={`tab-${t}`}
+              plain
+              dimColor={t !== tab && !isNew(t)}
+              onPress={async () => {
+                await markSeen($, [tab, t])
+                await update($, tabAtom, () => t)
+              }}
+            >
+              {t === tab ? (
+                <Text bold color="claude">{TAB_TITLES[t]}</Text>
+              ) : isNew(t) ? (
+                <Text bold>{TAB_TITLES[t]}</Text>
+              ) : (
+                TAB_TITLES[t]
+              )}
+            </Button>
+          </Box>
+        ))}
+      </Box>
+    )
+    const framed = (child: RenderNode) =>
+      painted(
+        <Box flexDirection="column" gap={1}>
+          {tabRow}
+          {child}
+        </Box>,
+      )
+
+    if (tab === 'todo') {
+      const plan = await read($, todos)
+
+      if (plan.length === 0) {
+        return framed(<Text dimColor>No plan yet. Claude writes one for longer tasks.</Text>)
+      }
+
+      const done = plan.filter(t => t.status === 'completed').length
+
+      return framed(
+        <Box flexDirection="column">
+          <Text dimColor>
+            {done}/{plan.length} done
+          </Text>
+          <Text> </Text>
+          {plan.map(t => (
+            <Box key={t.id}>
+              <Box width={2} flexShrink={0}>
+                {t.status === 'completed' ? (
+                  <Text color="success">✓</Text>
+                ) : t.status === 'in_progress' ? (
+                  <Text color="claude">{frame}</Text>
+                ) : (
+                  <Text dimColor>○</Text>
+                )}
+              </Box>
+              <Box width={columns - 2}>
+                <Text
+                  dimColor={t.status === 'completed'}
+                  bold={t.status === 'in_progress'}
+                  wrap="wrap"
+                >
+                  {t.status === 'in_progress' ? (t.activeForm ?? t.content) : t.content}
+                </Text>
+              </Box>
+            </Box>
+          ))}
+        </Box>,
+      )
+    }
+
+    if (tab === 'files') {
+      const files = filesOf(list)
+
+      if (files.length === 0) {
+        return framed(<Text dimColor>No files changed yet.</Text>)
+      }
+
+      return framed(
+        <Box flexDirection="column">
+          {files.map(f => {
+            const key = `f:${f.path}`
+
+            return (
+              <Box key={key} flexDirection="column" marginBottom={1}>
+                <Button key={key} plain onPress={() => toggleExpanded($, key)}>
+                  <Text bold>{clip(basename(f.path), columns - 24)}</Text>{' '}
+                  <Text color="success">+{f.added}</Text>{' '}
+                  <Text color="error">−{f.removed}</Text>
+                  <Text dimColor> {open.has(key) ? '▾' : '▸'}</Text>
+                </Button>
+                <Box marginLeft={2}>
+                  <Text dimColor wrap="truncate-start">
+                    {home(dirOf(f.path))} · {f.edits} {f.edits === 1 ? 'edit' : 'edits'}
+                  </Text>
+                </Box>
+                {open.has(key) && (
+                  <Box marginLeft={2} width={columns - 2}>
+                    <Code source={f.patch} format="diff" path={f.path} wrap="truncate-end" />
+                  </Box>
+                )}
+              </Box>
+            )
+          })}
+        </Box>,
+      )
+    }
+
+    if (tab === 'agents') {
+      const crew = await read($, agents)
+
+      if (crew.length === 0) {
+        return framed(<Text dimColor>No subagents in this session.</Text>)
+      }
+
+      return framed(
+        <Box flexDirection="column">
+          {[...crew].reverse().map(a => {
+            const isLive = !ENDED.has(a.status)
+            const end = a.endedAt ?? Math.max(now.now, a.startedAt)
+
+            return (
+              <Box key={a.id} flexDirection="column" marginBottom={1}>
+                <Box>
+                  <Box width={2} flexShrink={0}>
+                    {a.status === 'running' || a.status === 'pending' ? (
+                      <Text color="claude">{frame}</Text>
+                    ) : a.status === 'completed' ? (
+                      <Text color="success">✓</Text>
+                    ) : a.status === 'failed' ? (
+                      <Text color="error">✗</Text>
+                    ) : a.status === 'killed' ? (
+                      <Text color="warning">■</Text>
+                    ) : (
+                      <Text dimColor>◌</Text>
+                    )}
+                  </Box>
+                  <Text bold={isLive} dimColor={!isLive} wrap="truncate-end">
+                    {clip(a.description, columns - 4)}
+                  </Text>
+                </Box>
+                <Box marginLeft={2}>
+                  <Text dimColor wrap="truncate-end">
+                    {a.type} · {elapsed(end - a.startedAt)} · {countLabel(a.tools)}
+                    {a.status === 'idle' || a.status === 'waiting' ? ` · ${a.status}` : ''}
+                  </Text>
+                </Box>
+                {isLive && a.lastStep !== '' && (
+                  <Box marginLeft={2}>
+                    <Text dimColor wrap="truncate-end">
+                      › {clip(a.lastStep, columns - 6)}
+                    </Text>
+                  </Box>
+                )}
+              </Box>
+            )
+          })}
+        </Box>,
+      )
+    }
+
     const focused = await read($, focus)
     const all = list.filter(g => g.entries.length > 0 || g === list[list.length - 1])
     const at = focused === null ? -1 : all.findIndex(g => g.id === focused)
@@ -475,13 +863,13 @@ export const register: Register = on => {
     const target = at === -1 ? undefined : all[at]
 
     if (shown.length === 0) {
-      return painted(<Text dimColor>No tool calls yet.</Text>)
+      return framed(<Text dimColor>No tool calls yet.</Text>)
     }
 
     // Newest groups that fit: a header, a line per call, a command line under
     // each failure, and a blank line between groups.
     const fitted: LogGroup[] = []
-    let used = target === undefined ? 0 : 2
+    let used = target === undefined ? 2 : 4
     for (const g of [...shown].reverse()) {
       const height =
         2 +
@@ -497,7 +885,7 @@ export const register: Register = on => {
 
     const latest = list[list.length - 1]
 
-    return painted(
+    return framed(
       <Box flexDirection="column" gap={1}>
         {target !== undefined && (
           <Box>
