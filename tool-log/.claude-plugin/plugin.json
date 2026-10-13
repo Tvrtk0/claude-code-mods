@@ -1,0 +1,9 @@
+{
+  "name": "tool-log",
+  "version": "1.2.0",
+  "description": "Moves tool calls out of the chat into a live side log grouped by prompt, with file diffs on click, and replaces the spinner with a minimal animated one.",
+  "author": {
+    "name": "Tvrtk0"
+  },
+  "types": "./types/index.d.ts"
+}

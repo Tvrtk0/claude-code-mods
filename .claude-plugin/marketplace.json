@@ -1,0 +1,35 @@
+{
+  "name": "local-mods",
+  "owner": {
+    "name": "Tvrtk0"
+  },
+  "metadata": {
+    "description": "Personal Claude Code mods for a calmer, more readable terminal."
+  },
+  "plugins": [
+    {
+      "name": "readable-width",
+      "source": "./readable-width",
+      "description": "Caps reply and prompt text at 80 columns while code blocks and tables keep the full width, and highlights your own prompts.",
+      "version": "1.0.0"
+    },
+    {
+      "name": "usage-meters",
+      "source": "./usage-meters",
+      "description": "A compact band above the prompt with context, 5-hour and weekly usage meters.",
+      "version": "1.0.0"
+    },
+    {
+      "name": "tool-log",
+      "source": "./tool-log",
+      "description": "Moves tool calls out of the chat into a live side log grouped by prompt, with file diffs on click, and replaces the spinner with a minimal animated one.",
+      "version": "1.2.0"
+    },
+    {
+      "name": "turn-details",
+      "source": "./turn-details",
+      "description": "Replaces the 'Brewed for 34s' line with a details toggle that folds the turn's duration, tools and model open in place.",
+      "version": "1.0.0"
+    }
+  ]
+}

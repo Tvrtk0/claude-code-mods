@@ -1,0 +1,9 @@
+{
+  "name": "turn-details",
+  "version": "1.0.0",
+  "description": "Replaces the 'Brewed for 34s' line with a details toggle that folds the turn's duration, tools and model open in place.",
+  "author": {
+    "name": "Tvrtk0"
+  },
+  "types": "./types/index.d.ts"
+}

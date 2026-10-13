@@ -1,0 +1,119 @@
+import type { RenderElement } from 'claude-code'
+import { expect, test } from 'claude-code/testing'
+
+const ENGINE: RenderElement = { type: 'Box', props: {}, children: [] }
+
+test('logs tool calls and folds them in the chat', async ($, on) => {
+  let clock = 1_000
+  on('ui.render', () => ENGINE)
+  on('clock.now', () => ({ value: (clock += 10) }) as never)
+  on('clock.every', () => ({ value: undefined }) as never)
+  on('tool.call', (_, e) =>
+    (e.tool_use_id === 'c' ? { result: 'nope', isError: true } : { result: 'ok' }) as never,
+  )
+
+  on('prompt.submit', (_, e) => ({ text: e.text }) as never)
+
+  await $.prompt.submit({ text: 'show an example', origin: { kind: 'composer' }, wait: false } as never)
+  await $.tool.call({
+    tool: 'Bash',
+    command: 'ls -la /Users/me/dev',
+    description: 'List the mods',
+    tool_use_id: 'a',
+  } as never)
+  await $.tool.call({ tool: 'Read', file_path: '/x/y/register.tsx', tool_use_id: 'b' } as never)
+  await $.tool.call({ tool: 'Bash', command: 'cat /Users/me/nope', tool_use_id: 'c' } as never)
+
+  const pane = await $.ui.mount({
+    plugin: 'tool-log',
+    surface: 'terminal',
+    component: 'Pane',
+    requestId: 'tool-log',
+    props: { title: 'Log', isFocused: false, bodyColumns: 56, placement: 'dock', scroll: { bodyRows: 30 } } as never,
+    viewport: { columns: 200, rows: 40 },
+  })
+  expect(await pane.find({ text: 'show an example' })).toBeDefined()
+  expect(await pane.find({ text: 'List the mods' })).toBeDefined()
+  expect(await pane.find({ text: 'ls -la' })).toBeUndefined()
+  expect(await pane.find({ text: /Read register\.tsx/ })).toBeDefined()
+  expect(await pane.find({ text: '✗' })).toBeDefined()
+  expect(await pane.find({ text: 'cat ~/nope' })).toBeDefined()
+
+  await pane.press({ key: 'a' })
+  expect(await pane.find({ text: 'ls -la ~/dev' })).toBeDefined()
+  await pane.press({ key: 'a' })
+  expect(await pane.find({ text: 'ls -la ~/dev' })).toBeUndefined()
+
+  const group = await $.ui.mount({
+    plugin: 'tool-log',
+    surface: 'terminal',
+    component: 'ToolGroup',
+    props: {
+      calls: [
+        { tool: 'Bash', input: {}, isRunning: false, isErrored: false },
+        { tool: 'Read', input: {}, isRunning: false, isErrored: false },
+      ],
+      isActive: false,
+      isExpanded: false,
+    } as never,
+  })
+  expect(await group.find({ type: 'Button', text: '› 2 tools' })).toBeDefined()
+})
+
+test('draws a small spinner with the elapsed time', async ($, on) => {
+  on('ui.render', () => ENGINE)
+
+  const spinner = await $.ui.mount({
+    plugin: 'tool-log',
+    surface: 'terminal',
+    component: 'Spinner',
+    props: { word: 'Kerfuffling', message: null, suffix: '…', mode: 'thinking' },
+  })
+  expect(await spinner.find({ text: '⠋' })).toBeDefined()
+  expect(await spinner.find({ text: '0s' })).toBeDefined()
+  expect(await spinner.find({ text: /Kerfuffling/ })).toBeUndefined()
+  expect(await spinner.find({ text: /Thinking/ })).toBeDefined()
+})
+
+test('sums file changes in the chat and shows the diff on click', async ($, on) => {
+  on('ui.render', () => ENGINE)
+  on('clock.now', () => ({ value: 1_000 }) as never)
+  on('clock.every', () => ({ value: undefined }) as never)
+  on('tool.call', () =>
+    ({
+      result: {
+        filePath: '/x/register.tsx',
+        structuredPatch: [
+          { oldStart: 3, oldLines: 1, newStart: 3, newLines: 2, lines: ['-const A = 4', '+const A = 0', '+const B = 1'] },
+        ],
+      },
+    }) as never,
+  )
+
+  await $.tool.call({
+    tool: 'Edit',
+    file_path: '/x/register.tsx',
+    old_string: 'const A = 4',
+    new_string: 'const A = 0\nconst B = 1',
+    tool_use_id: 'e1',
+  } as never)
+
+  const row = await $.ui.mount({
+    plugin: 'tool-log',
+    surface: 'terminal',
+    component: 'ToolUse',
+    props: { tool_use_id: 'e1', tool: 'Edit', input: {}, isRunning: false, isErrored: false, isInterrupted: false } as never,
+  })
+  expect(await row.find({ type: 'Button', text: '› 1 tool · 1 file changed +2 −1' })).toBeDefined()
+
+  const pane = await $.ui.mount({
+    plugin: 'tool-log',
+    surface: 'terminal',
+    component: 'Pane',
+    requestId: 'tool-log',
+    props: { title: 'Log', isFocused: false, bodyColumns: 56, placement: 'dock', scroll: { bodyRows: 30 } } as never,
+  })
+  expect(await pane.find({ type: 'Code' })).toBeUndefined()
+  await pane.press({ key: 'e1' })
+  expect(await pane.find({ type: 'Code' })).toBeDefined()
+})
