@@ -22,6 +22,6 @@ export type Tick = { frame: number; elapsedMs: number }
 
 declare module 'claude-code' {
   interface PluginState {
-    'tool-log': { groups: LogGroup[]; tick: Tick; expanded: string[]; isRepo: boolean }
+    'tool-log': { groups: LogGroup[]; tick: Tick; expanded: string[]; isRepo: boolean; focus: string | null }
   }
 }

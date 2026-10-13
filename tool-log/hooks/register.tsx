@@ -14,6 +14,8 @@ const groups = atom({ plugin: 'tool-log', key: 'groups' } as const, [])
 const MAX_GROUPS = 50
 const expanded = atom({ plugin: 'tool-log', key: 'expanded' } as const, [])
 const isRepo = atom({ plugin: 'tool-log', key: 'isRepo' } as const, false)
+// The prompt group a chat line opened the log on; null follows the newest.
+const focus = atom({ plugin: 'tool-log', key: 'focus' } as const, null)
 
 // The most patch text kept per call; whole hunks only, so the diff still parses.
 const PATCH_LIMIT = 20_000
@@ -179,14 +181,40 @@ function onLatest(list: LogGroup[] | undefined, at: number, fn: (g: LogGroup) =>
   return [...all.slice(0, last ? -1 : undefined), fn(latest)]
 }
 
-async function toggle($: EngineInterface) {
-  const isOpen = (await $.ui.panes()).some(pane => pane.id === PANE)
+const isLogOpen = async ($: EngineInterface) =>
+  (await $.ui.panes()).some(pane => pane.id === PANE)
 
-  if (isOpen) {
+// [ log ] and /log: open the log on the newest prompt, or close it.
+async function toggle($: EngineInterface) {
+  await update($, focus, () => null)
+
+  if (await isLogOpen($)) {
     await $.ui.close({ id: PANE })
   } else {
     await $.ui.open({ id: PANE, title: 'Log', columns: 56 })
   }
+}
+
+// A chat line: open the log on its own prompt's group; pressed again while
+// that group is in view, close the log.
+async function focusOn($: EngineInterface, ids: readonly (string | undefined)[]) {
+  const wanted = new Set(ids)
+  const group = (await read($, groups)).find(g => g.entries.some(x => wanted.has(x.id)))
+  const isOpen = await isLogOpen($)
+
+  if (group === undefined) {
+    if (!isOpen) await $.ui.open({ id: PANE, title: 'Log', columns: 56 })
+    return
+  }
+
+  if (isOpen && (await read($, focus)) === group.id) {
+    await update($, focus, () => null)
+    await $.ui.close({ id: PANE })
+    return
+  }
+
+  await update($, focus, () => group.id)
+  if (!isOpen) await $.ui.open({ id: PANE, title: 'Log', columns: 56 })
 }
 
 // The running turn's start and its animation timer; a reload starts over.
@@ -254,6 +282,8 @@ export const register: Register = on => {
           entries: [],
         }
         await update($, groups, list => [...(list ?? []), group].slice(-MAX_GROUPS))
+        // A new prompt takes the log back to what is happening now.
+        await update($, focus, () => null)
       }
     } catch {}
 
@@ -328,7 +358,7 @@ export const register: Register = on => {
           label={`› ${countLabel(e.props.calls.length)}${changes}`}
           plain
           dimColor
-          onPress={() => toggle($)}
+          onPress={() => focusOn($, e.props.calls.map(call => call.tool_use_id))}
         />
       </Box>
     )
@@ -349,7 +379,7 @@ export const register: Register = on => {
           label={`› ${countLabel(1)}${changes}`}
           plain
           dimColor
-          onPress={() => toggle($)}
+          onPress={() => focusOn($, [e.props.tool_use_id])}
         />
       </Box>
     )
@@ -437,7 +467,12 @@ export const register: Register = on => {
     const clip = (text: string, width: number) =>
       text.length > width ? `${text.slice(0, width - 1)}…` : text
 
-    const shown = list.filter(g => g.entries.length > 0 || g === list[list.length - 1])
+    const focused = await read($, focus)
+    const all = list.filter(g => g.entries.length > 0 || g === list[list.length - 1])
+    const at = focused === null ? -1 : all.findIndex(g => g.id === focused)
+    // Focused, the log ends at that group: it sits at the bottom, older above.
+    const shown = at === -1 ? all : all.slice(0, at + 1)
+    const target = at === -1 ? undefined : all[at]
 
     if (shown.length === 0) {
       return painted(<Text dimColor>No tool calls yet.</Text>)
@@ -446,7 +481,7 @@ export const register: Register = on => {
     // Newest groups that fit: a header, a line per call, a command line under
     // each failure, and a blank line between groups.
     const fitted: LogGroup[] = []
-    let used = 0
+    let used = target === undefined ? 0 : 2
     for (const g of [...shown].reverse()) {
       const height =
         2 +
@@ -464,8 +499,23 @@ export const register: Register = on => {
 
     return painted(
       <Box flexDirection="column" gap={1}>
+        {target !== undefined && (
+          <Box>
+            <Text dimColor wrap="truncate-end">
+              viewing: {clip(target.prompt === '' ? '(no prompt)' : target.prompt, columns - 16)}
+            </Text>
+            <Text dimColor> · </Text>
+            <Button
+              key="unfocus"
+              label="✕"
+              plain
+              dimColor
+              onPress={() => update($, focus, () => null)}
+            />
+          </Box>
+        )}
         {fitted.map(g => {
-          const isOld = g !== latest
+          const isOld = target === undefined ? g !== latest : g !== target
           const meta = `${clockTime(g.startedAt).slice(0, 5)} · ${g.entries.length}`
           const promptWidth = Math.max(8, columns - meta.length - 4)
 

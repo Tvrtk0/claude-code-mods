@@ -117,3 +117,40 @@ test('sums file changes in the chat and shows the diff on click', async ($, on) 
   await pane.press({ key: 'e1' })
   expect(await pane.find({ type: 'Code' })).toBeDefined()
 })
+
+test('a chat line focuses its prompt until the next prompt', async ($, on) => {
+  on('ui.render', () => ENGINE)
+  on('clock.now', () => ({ value: 1_000 }) as never)
+  on('clock.every', () => ({ value: undefined }) as never)
+  on('prompt.submit', (_, e) => ({ text: e.text }) as never)
+  on('tool.call', () => ({ result: 'ok' }) as never)
+  on('ui.panes', () => ({ value: [] }) as never)
+  on('ui.open', () => ({ value: { isPlaced: true } }) as never)
+
+  await $.prompt.submit({ text: 'first prompt', origin: { kind: 'composer' }, wait: false } as never)
+  await $.tool.call({ tool: 'Bash', command: 'ls', description: 'List', tool_use_id: 'a' } as never)
+  on('clock.now', () => ({ value: 2_000 }) as never)
+  await $.prompt.submit({ text: 'second prompt', origin: { kind: 'composer' }, wait: false } as never)
+  await $.tool.call({ tool: 'Bash', command: 'pwd', description: 'Where', tool_use_id: 'b' } as never)
+
+  const row = await $.ui.mount({
+    plugin: 'tool-log',
+    surface: 'terminal',
+    component: 'ToolUse',
+    props: { tool_use_id: 'a', tool: 'Bash', input: {}, isRunning: false, isErrored: false, isInterrupted: false } as never,
+  })
+  await row.press({ key: 'log' })
+
+  const pane = await $.ui.mount({
+    plugin: 'tool-log',
+    surface: 'terminal',
+    component: 'Pane',
+    requestId: 'tool-log',
+    props: { title: 'Log', isFocused: false, bodyColumns: 56, placement: 'dock', scroll: { bodyRows: 30 } } as never,
+  })
+  expect(await pane.find({ text: /viewing: first prompt/ })).toBeDefined()
+  expect(await pane.find({ text: 'second prompt' })).toBeUndefined()
+
+  await $.prompt.submit({ text: 'third prompt', origin: { kind: 'composer' }, wait: false } as never)
+  expect(await pane.find({ text: /viewing:/ })).toBeUndefined()
+})
