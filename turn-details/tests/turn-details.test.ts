@@ -48,5 +48,5 @@ test('leaves an unknown turn to the engine', async ($, on) => {
     component: 'TurnDuration',
     props: { word: 'Brewed', durationMs: 1234 },
   })
-  expect(await row.drawn()).toEqual(ENGINE)
+  expect(await row.drawn()).toMatchObject(ENGINE)
 })

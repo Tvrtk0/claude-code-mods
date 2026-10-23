@@ -7,6 +7,10 @@ import type {
 
 const WIDTH = 80
 const GUTTER = 2
+// A prompt bubble's frame and padding: a cell each side for both.
+const BUBBLE = 4
+// A reply card's frame: the band's grey.
+const CARD = '#5a5a5a'
 const PADDING = 0
 
 type Segment = { text: string; isWide: boolean }
@@ -99,25 +103,32 @@ export const register: Register = on => {
       return next(e)
     }
 
-    const { Box, Text, Markdown } = $.ui.resolve(e)
-    const wide = columns - margin - GUTTER
+    const { Box, Markdown } = $.ui.resolve(e)
+    // A card: a grey rounded frame around each piece of the reply. It is as
+    // wide as its widest block: the whole column when a wide block (code, a
+    // table) is in it, else the longest line, at most WIDTH, frame included.
+    const parts = segment(e.props.text)
+    const room = columns - margin
+    const longest = Math.max(0, ...e.props.text.split('\n').map(line => line.length))
+    const width = parts.some(part => part.isWide) ? room : Math.min(WIDTH, room, longest + BUBBLE)
+    const inner = width - BUBBLE
 
     return (
       <Box
         marginLeft={margin}
-        marginTop={e.props.isFirstOfReply ? 1 : 0}
-        width={columns - margin}
+        marginTop={1}
+        width={width}
+        flexDirection="column"
+        gap={1}
+        borderStyle="round"
+        borderColor={CARD}
+        paddingX={1}
       >
-        <Box width={GUTTER} flexShrink={0}>
-          <Text>{e.props.isFirstOfReply ? '●' : ' '}</Text>
-        </Box>
-        <Box flexDirection="column" gap={1}>
-          {segment(e.props.text).map(part => (
-            <Box width={part.isWide ? wide : Math.min(WIDTH - GUTTER, wide)}>
-              <Markdown text={part.text} />
-            </Box>
-          ))}
-        </Box>
+        {parts.map(part => (
+          <Box width={part.isWide ? inner : Math.min(WIDTH - BUBBLE, inner)}>
+            <Markdown text={part.text} />
+          </Box>
+        ))}
       </Box>
     )
   })
@@ -141,16 +152,26 @@ export const register: Register = on => {
     }
 
     const { Box, Text } = $.ui.resolve(e)
-    const width = Math.min(WIDTH, columns - margin)
+    // A bubble: a rounded frame in the accent color, as wide as the prompt's
+    // longest line and at most WIDTH, the frame and its padding included.
+    const longest = Math.max(...e.props.text.split('\n').map(line => line.length))
+    const width = Math.min(WIDTH, columns - margin, longest + GUTTER + BUBBLE)
 
     return (
-      <Box marginLeft={margin} marginTop={1} width={width}>
+      <Box
+        marginLeft={margin}
+        marginTop={1}
+        width={width}
+        borderStyle="round"
+        borderColor="claude"
+        paddingX={1}
+      >
         <Box width={GUTTER} flexShrink={0}>
           <Text bold color="claude">
             ❯
           </Text>
         </Box>
-        <Box width={width - GUTTER}>
+        <Box width={width - GUTTER - BUBBLE}>
           <Text bold color="claude">
             {e.props.text}
           </Text>

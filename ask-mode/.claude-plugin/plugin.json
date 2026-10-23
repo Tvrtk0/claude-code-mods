@@ -1,0 +1,9 @@
+{
+  "name": "ask-mode",
+  "version": "1.0.0",
+  "description": "A read-only mode for questions: Claude answers and investigates but cannot change files, run state-changing commands or send anything; quick, ask and deep levels.",
+  "author": {
+    "name": "Tvrtk0"
+  },
+  "types": "./types/index.d.ts"
+}

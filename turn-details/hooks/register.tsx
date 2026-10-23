@@ -6,6 +6,9 @@ import type { TurnRecord } from '../types'
 const turns = atom({ plugin: 'turn-details', key: 'turns' } as const, {})
 const expanded = atom({ plugin: 'turn-details', key: 'expanded' } as const, [])
 
+// The label: the band's grey.
+const LABEL = '#9a9a9a'
+
 const pad = (n: number) => String(n).padStart(2, '0')
 
 const clockTime = (ms: number) => {
@@ -80,24 +83,29 @@ export const register: Register = on => {
       </Box>
     )
 
+    // An accent diamond marks the toggle; the details fold open beneath it,
+    // in line with its label.
     return (
-      <Box marginY={1} flexDirection="column">
-        <Button
-          key="details"
-          plain
-          dimColor
-          onPress={() =>
-            update($, expanded, keys =>
-              (keys ?? []).includes(key)
-                ? (keys ?? []).filter(k => k !== key)
-                : [...(keys ?? []), key].slice(-100),
-            )
-          }
-        >
-          📋 details {isOpen ? '▾' : '▸'}
-        </Button>
+      <Box key="details-card" marginY={1} flexDirection="column">
+        <Box>
+          <Text color="claude">◆ </Text>
+          <Button
+            key="details"
+            plain
+            hover={{ color: 'white' }}
+            onPress={() =>
+              update($, expanded, keys =>
+                (keys ?? []).includes(key)
+                  ? (keys ?? []).filter(k => k !== key)
+                  : [...(keys ?? []), key].slice(-100),
+              )
+            }
+          >
+            <Text color={LABEL}>details {isOpen ? '▾' : '▸'}</Text>
+          </Button>
+        </Box>
         {isOpen && (
-          <Box flexDirection="column" marginLeft={2}>
+          <Box flexDirection="column" marginTop={1} marginLeft={2}>
             {row('duration', duration(turn.durationMs))}
             {row('finished', clockTime(turn.endedAt))}
             {row(

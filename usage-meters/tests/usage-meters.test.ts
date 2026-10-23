@@ -5,7 +5,7 @@ const USAGE = {
   context: { tokens: 84_000, window: 200_000, percent: 42 },
   rateLimits: [
     { kind: 'five_hour', percentUsed: 31, resetsAt: '2026-10-13T14:10:00Z' },
-    { kind: 'seven_day', percentUsed: 64 },
+    { kind: 'seven_day', percentUsed: 64, resetsAt: '2026-10-16T16:00:00Z' },
   ],
   cost: { usd: 0.84 },
 }
@@ -29,7 +29,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
       plugin: 'usage-meters',
       surface,
       component: 'AbovePrompt',
-      props: { hasSurvey: false, isWorking: false, maxRows: 3 } as never,
+      props: { hasSurvey: false, isWorking: false, maxRows: 3, bodyColumns: 100 } as never,
     })
 
     expect(await ui.find({ text: ' 42%' })).toBeDefined()
@@ -37,8 +37,10 @@ for (const surface of ['terminal', 'desktop'] as const) {
     expect(await ui.find({ text: ' 64%' })).toBeDefined()
     expect(await ui.find({ text: '7d ' })).toBeDefined()
     expect(await ui.find({ text: ' 2h 10m' })).toBeDefined()
-    expect(await ui.find({ text: /\$/ })).toBeUndefined()
-    expect(await ui.find({ text: /84k/ })).toBeUndefined()
+    expect(await ui.find({ text: ' 3d 4h' })).toBeDefined()
+    expect(await ui.drawn()).toMatchObject({ props: { borderStyle: 'round' } })
+    expect(await ui.find({ text: 'Context 84k / 200k tokens · $0.84 this session' })).toBeDefined()
+    expect(await ui.find({ text: /^Weekly limit · resets / })).toBeDefined()
   })
 }
 

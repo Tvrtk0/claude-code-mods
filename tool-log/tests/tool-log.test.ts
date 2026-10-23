@@ -57,7 +57,7 @@ test('logs tool calls and folds them in the chat', async ($, on) => {
       isExpanded: false,
     } as never,
   })
-  expect(await group.find({ type: 'Button', text: '› 2 tools' })).toBeDefined()
+  expect(await group.find({ type: 'Button', text: '2 tools' })).toBeDefined()
 })
 
 test('draws a small spinner with the elapsed time', async ($, on) => {
@@ -104,7 +104,7 @@ test('sums file changes in the chat and shows the diff on click', async ($, on) 
     component: 'ToolUse',
     props: { tool_use_id: 'e1', tool: 'Edit', input: {}, isRunning: false, isErrored: false, isInterrupted: false } as never,
   })
-  expect(await row.find({ type: 'Button', text: '› 1 tool · 1 file changed +2 −1' })).toBeDefined()
+  expect(await row.find({ type: 'Button', text: '1 tool · 1 file changed +2 −1' })).toBeDefined()
 
   const pane = await $.ui.mount({
     plugin: 'tool-log',
@@ -158,44 +158,14 @@ test('a chat line focuses its prompt until the next prompt', async ($, on) => {
 
 const PANE_PROPS = { title: 'Log', isFocused: false, bodyColumns: 56, placement: 'dock', scroll: { bodyRows: 30 } } as never
 
-test('keeps the plan from TodoWrite in the Todo tab', async ($, on) => {
-  on('ui.render', () => ENGINE)
-  on('clock.now', () => ({ value: 1_000 }) as never)
-  on('tool.call', () => ({ result: 'ok' }) as never)
-  on('ui.panes', () => ({ value: [] }) as never)
-  on('ui.open', () => ({ value: { isPlaced: true } }) as never)
-
-  await $.tool.call({
-    tool: 'TodoWrite',
-    todos: [
-      { content: 'Read the code', status: 'completed', activeForm: 'Reading the code' },
-      { content: 'Write the tabs', status: 'in_progress', activeForm: 'Writing the tabs' },
-      { content: 'Push', status: 'pending', activeForm: 'Pushing' },
-    ],
-    tool_use_id: 't',
-  } as never)
-
-  const band = await $.ui.mount({
-    plugin: 'tool-log',
-    surface: 'terminal',
-    component: 'AbovePrompt',
-    props: { hasSurvey: false, isWorking: false, maxRows: 3 } as never,
-  })
-  await band.press({ key: 'log-toggle' })
-
-  const pane = await $.ui.mount({ plugin: 'tool-log', surface: 'terminal', component: 'Pane', requestId: 'tool-log', props: PANE_PROPS })
-  await pane.press({ key: 'tab-todo' })
-  expect(await pane.find({ text: '1/3 done' })).toBeDefined()
-  expect(await pane.find({ text: 'Writing the tabs' })).toBeDefined()
-  expect(await pane.find({ text: 'Push' })).toBeDefined()
-})
-
 test('tracks a subagent and keeps its calls out of the log', async ($, on) => {
   on('ui.render', () => ENGINE)
   on('clock.now', () => ({ value: 1_000 }) as never)
   on('tool.call', () => ({ result: 'ok' }) as never)
   on('agent.spawn', () => ({ model: 'haiku', agentId: 'ag1' }) as never)
-  on('agent.list', () => ({ value: [{ id: 'ag1', description: 'Review PR 12', type: 'Explore', status: 'running' }] }) as never)
+  let status = 'running'
+  on('agent.list', () => ({ value: [{ id: 'ag1', description: 'Review PR 12', type: 'Explore', status }] }) as never)
+  on('turn.complete', (_, e) => ({ text: e.answer }))
   on('ui.panes', () => ({ value: [] }) as never)
   on('ui.open', () => ({ value: { isPlaced: true } }) as never)
 
@@ -215,6 +185,32 @@ test('tracks a subagent and keeps its calls out of the log', async ($, on) => {
   expect(await pane.find({ text: 'Review PR 12' })).toBeDefined()
   expect(await pane.find({ text: /1 tool/ })).toBeDefined()
   expect(await pane.find({ text: '› Reading b.ts' })).toBeDefined()
+
+  status = 'completed'
+  await $.turn.complete({ answer: 'ok', durationMs: 1_000, isAborted: false, turnId: 't', reason: 'answer' })
+  expect(await pane.find({ text: '✓' })).toBeDefined()
+  expect(await pane.find({ text: '› Reading b.ts' })).toBeUndefined()
+})
+
+test('switches tabs with l', async ($, on) => {
+  on('ui.render', () => ENGINE)
+  on('clock.now', () => ({ value: 1_000 }) as never)
+  on('agent.list', () => ({ value: [] }) as never)
+
+  const pane = await $.ui.mount({
+    plugin: 'tool-log',
+    surface: 'terminal',
+    component: 'Pane',
+    requestId: 'tool-log',
+    props: { title: 'Panel', isFocused: true, bodyColumns: 56, placement: 'dock', scroll: { bodyRows: 30 } } as never,
+  })
+  await pane.press({ key: 'tab-files' })
+  expect(await pane.find({ text: 'No files changed yet.' })).toBeDefined()
+  await pane.press({ key: 'hint-l' })
+  expect(await pane.find({ text: 'No subagents in this session.' })).toBeDefined()
+  await pane.press({ key: 'hint-l' })
+  expect(await pane.find({ text: 'No tool calls yet.' })).toBeDefined()
+  expect(await pane.find({ text: 'Todo' })).toBeUndefined()
 })
 
 test('counts failed calls on the chat line', async ($, on) => {
@@ -272,4 +268,45 @@ test('scrolls under a fixed header and starts at the newest row', async ($, on) 
 
   await pane.press({ key: 'hint-g' })
   expect(await pane.find({ text: /^1–\d+ of 31 ↓$/ })).toBeDefined()
+})
+
+test('lists a file Write created in the Files tab', async ($, on) => {
+  on('ui.render', () => ENGINE)
+  on('clock.now', () => ({ value: 1_000 }) as never)
+  on('tool.call', () =>
+    ({ result: { type: 'create', filePath: '/x/new.md', content: 'one\ntwo\n', structuredPatch: [] } }) as never,
+  )
+  on('ui.panes', () => ({ value: [] }) as never)
+  on('ui.open', () => ({ value: { isPlaced: true } }) as never)
+
+  await $.tool.call({ tool: 'Write', file_path: '/x/new.md', content: 'one\ntwo\n', tool_use_id: 'w1' } as never)
+
+  const pane = await $.ui.mount({ plugin: 'tool-log', surface: 'terminal', component: 'Pane', requestId: 'tool-log', props: PANE_PROPS })
+  await pane.press({ key: 'tab-files' })
+  expect(await pane.find({ text: 'new.md' })).toBeDefined()
+  expect(await pane.find({ text: '+2' })).toBeDefined()
+  await pane.press({ key: 'f:/x/new.md' })
+  expect(await pane.find({ type: 'Code' })).toBeDefined()
+})
+
+test('folds rows of one run into the last row', async ($, on) => {
+  on('ui.render', () => ENGINE)
+  on('clock.now', () => ({ value: 1_000 }) as never)
+  on('tool.call', () => ({ result: 'ok' }) as never)
+
+  await $.tool.call({ tool: 'Bash', command: 'ls', description: 'One', tool_use_id: 'r1' } as never)
+  await $.tool.call({ tool: 'Bash', command: 'pwd', description: 'Two', tool_use_id: 'r2' } as never)
+  await $.tool.call({ tool: 'Read', file_path: '/a/b.ts', tool_use_id: 'r3' } as never)
+
+  const row = (id: string) =>
+    $.ui.mount({
+      plugin: 'tool-log',
+      surface: 'terminal',
+      component: 'ToolUse',
+      props: { tool_use_id: id, tool: 'Bash', input: {}, isRunning: false, isErrored: false, isInterrupted: false } as never,
+    })
+
+  expect(await (await row('r1')).find({ type: 'Button' })).toBeUndefined()
+  expect(await (await row('r2')).find({ type: 'Button' })).toBeUndefined()
+  expect(await (await row('r3')).find({ type: 'Button', text: '3 tools' })).toBeDefined()
 })

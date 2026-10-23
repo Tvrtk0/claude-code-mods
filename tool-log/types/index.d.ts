@@ -9,6 +9,8 @@ export type LogEntry = {
   added?: number
   removed?: number
   status: 'running' | 'ok' | 'error'
+  // The run of tool calls it belongs to: calls with no text between them.
+  run?: string
 }
 
 export type LogGroup = {
@@ -20,14 +22,7 @@ export type LogGroup = {
 
 export type Tick = { frame: number; elapsedMs: number; now: number }
 
-export type Tab = 'log' | 'todo' | 'files' | 'agents'
-
-export type TodoItem = {
-  id: string
-  content: string
-  activeForm?: string
-  status: 'pending' | 'in_progress' | 'completed'
-}
+export type Tab = 'log' | 'files' | 'agents'
 
 export type AgentRow = {
   id: string
@@ -49,7 +44,6 @@ declare module 'claude-code' {
       isRepo: boolean
       focus: string | null
       tab: Tab
-      todos: TodoItem[]
       agents: AgentRow[]
       seen: Partial<Record<Tab, string>>
       scrollTop: Partial<Record<Tab, number | null>>

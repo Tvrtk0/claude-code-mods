@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, Register, RenderNode, Timer } from 'claude-code'
+import type { EngineInterface, Register, RenderElement, RenderInput, RenderNode, Timer } from 'claude-code'
 
-import type { AgentRow, LogEntry, LogGroup, Tab, TodoItem } from '../types'
+import type { AgentRow, LogEntry, LogGroup, Tab } from '../types'
 
 const PANE = 'tool-log'
 const FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏']
@@ -10,6 +10,13 @@ const NOTIFY_AFTER_MS = 30_000
 
 // The log's own background, a dark plum in place of the engine's grey.
 const PANE_BG = '#2a2133'
+
+// The band's framed buttons and the chat's tool cards: the meters' grey frame, lighter under the
+// pointer, a grey label and a dimmer key hint.
+const FRAME = '#5a5a5a'
+const FRAME_HOVER = '#9a9a9a'
+const LABEL = '#c8c8c8'
+const KEY = '#8a8a8a'
 
 const groups = atom({ plugin: 'tool-log', key: 'groups' } as const, [])
 const MAX_GROUPS = 50
@@ -26,7 +33,6 @@ const tick = atom({ plugin: 'tool-log', key: 'tick' } as const, {
   now: 0,
 })
 const tabAtom = atom({ plugin: 'tool-log', key: 'tab' } as const, 'log')
-const todos = atom({ plugin: 'tool-log', key: 'todos' } as const, [])
 const agents = atom({ plugin: 'tool-log', key: 'agents' } as const, [])
 // Each tab's content signature when it was last in view: a tab whose
 // signature has moved on since shows as unread.
@@ -35,10 +41,9 @@ const seen = atom({ plugin: 'tool-log', key: 'seen' } as const, {})
 // per tab; null keeps the log pinned to its newest line.
 const scrollTop = atom({ plugin: 'tool-log', key: 'scrollTop' } as const, {})
 
-const TABS: Tab[] = ['log', 'files', 'agents', 'todo']
+const TABS: Tab[] = ['log', 'files', 'agents']
 const TAB_TITLES: Record<Tab, string> = {
   log: 'Log',
-  todo: 'Todo',
   files: 'Files',
   agents: 'Agents',
 }
@@ -141,7 +146,16 @@ function patchOf(
   result: unknown,
 ): { path?: string; patch: string; added: number; removed: number } | undefined {
   const fields = (result ?? {}) as Record<string, unknown>
-  const hunks = fields.structuredPatch
+  // A Write that creates a file reports no hunks: its content is one hunk of
+  // added lines.
+  const created =
+    fields.type === 'create' && typeof fields.content === 'string'
+      ? fields.content.replace(/\n$/, '').split('\n')
+      : undefined
+  const hunks =
+    created !== undefined && (!Array.isArray(fields.structuredPatch) || fields.structuredPatch.length === 0)
+      ? [{ oldStart: 0, oldLines: 0, newStart: 1, newLines: created.length, lines: created.map(l => `+${l}`) }]
+      : fields.structuredPatch
 
   if (!Array.isArray(hunks) || hunks.length === 0) return undefined
 
@@ -216,55 +230,6 @@ function filesOf(all: LogGroup[]): FileChange[] {
   return [...byPath.values()].reverse()
 }
 
-// The plan Claude keeps with TodoWrite, or with TaskCreate and TaskUpdate.
-async function trackTodos($: EngineInterface, tool: string, input: unknown, result: unknown) {
-  const fields = (input ?? {}) as Record<string, unknown>
-  const text = (key: string) => (typeof fields[key] === 'string' ? (fields[key] as string) : undefined)
-  const isStatus = (v: unknown): v is TodoItem['status'] =>
-    v === 'pending' || v === 'in_progress' || v === 'completed'
-
-  if (tool === 'TodoWrite' && Array.isArray(fields.todos)) {
-    const items: TodoItem[] = (fields.todos as Record<string, unknown>[]).map((t, i) => ({
-      id: `t${i}`,
-      content: typeof t.content === 'string' ? t.content : '',
-      activeForm: typeof t.activeForm === 'string' ? t.activeForm : undefined,
-      status: isStatus(t.status) ? t.status : 'pending',
-    }))
-    await update($, todos, () => items)
-    return
-  }
-
-  if (tool === 'TaskCreate') {
-    const id = ((result ?? {}) as { task?: { id?: unknown } }).task?.id
-    const subject = text('subject')
-    if (typeof id !== 'string' || subject === undefined) return
-    const item: TodoItem = { id, content: subject, activeForm: text('activeForm'), status: 'pending' }
-    await update($, todos, list => [...(list ?? []).filter(x => x.id !== id), item])
-    return
-  }
-
-  const id = text('taskId')
-  if (tool !== 'TaskUpdate' || id === undefined) return
-
-  if (fields.status === 'deleted') {
-    await update($, todos, list => (list ?? []).filter(x => x.id !== id))
-    return
-  }
-
-  await update($, todos, list =>
-    (list ?? []).map(x =>
-      x.id !== id
-        ? x
-        : {
-            ...x,
-            content: text('subject') ?? x.content,
-            activeForm: text('activeForm') ?? x.activeForm,
-            status: isStatus(fields.status) ? fields.status : x.status,
-          },
-    ),
-  )
-}
-
 // Brings each subagent's status up to date from the engine's roster.
 async function refreshAgents($: EngineInterface) {
   if ((await read($, agents)).length === 0) return
@@ -282,21 +247,16 @@ async function refreshAgents($: EngineInterface) {
   await update($, tick, prev => ({ frame: prev?.frame ?? 0, elapsedMs: prev?.elapsedMs ?? 0, now }))
 }
 
-function signatures(
-  all: LogGroup[],
-  plan: TodoItem[],
-  crew: AgentRow[],
-): Record<Tab, string> {
+function signatures(all: LogGroup[], crew: AgentRow[]): Record<Tab, string> {
   return {
     log: String(all.reduce((n, g) => n + g.entries.length, 0)),
-    todo: plan.map(t => t.id + t.status).join(','),
     files: filesOf(all).map(f => f.path + f.edits).join(','),
     agents: crew.map(a => a.id + a.status).join(','),
   }
 }
 
 async function markSeen($: EngineInterface, tabs: readonly Tab[]) {
-  const now = signatures(await read($, groups), await read($, todos), await read($, agents))
+  const now = signatures(await read($, groups), await read($, agents))
   await update($, seen, prev => {
     const next = { ...(prev ?? {}) }
     for (const t of tabs) next[t] = now[t]
@@ -406,7 +366,7 @@ const isLogOpen = async ($: EngineInterface) =>
 const openPane = ($: EngineInterface, focus?: true) =>
   $.ui.open({ id: PANE, title: 'Panel', columns: 56, ...(focus ? { focus } : {}) })
 
-// [ panel ] and /panel: open the panel on the tab last in view, or close it.
+// The panel chip and /panel: open the panel on the tab last in view, or close it.
 async function toggle($: EngineInterface) {
   await update($, focus, () => null)
 
@@ -464,6 +424,29 @@ async function focusOn($: EngineInterface, ids: readonly (string | undefined)[])
   if (!isOpen) await openPane($)
 }
 
+// The run the next tool calls join. A model response with text in it starts
+// a new run; responses that only call tools keep adding to the current one,
+// so the chat can show the whole run as one line.
+// A reload starts the module over, so the ids carry a prefix of its own:
+// a new run never takes the id of one the log kept from before.
+const RUN_PREFIX = `r${Math.floor(Math.random() * 1e9).toString(36)}-`
+let runSeq = 0
+let currentRun = `${RUN_PREFIX}0`
+
+function newRun() {
+  runSeq += 1
+  currentRun = `${RUN_PREFIX}${runSeq}`
+}
+
+// The calls sharing a run with any of `ids`, oldest first.
+function runOf(all: LogGroup[], ids: readonly (string | undefined)[]): LogEntry[] {
+  const wanted = new Set(ids)
+  const entries = all.flatMap(g => g.entries)
+  const run = entries.find(x => wanted.has(x.id))?.run
+  if (run === undefined) return entries.filter(x => wanted.has(x.id))
+  return entries.filter(x => x.run === run)
+}
+
 // The running turn's start and its animation timer; a reload starts over.
 let startedAt: number | null = null
 let timer: Timer | null = null
@@ -496,15 +479,51 @@ function stop() {
   startedAt = null
 }
 
+// One chat line for a run of tool calls, marked by an accent diamond: the
+// run's last row carries the count, changes and failures of the whole run;
+// earlier rows draw nothing.
+async function runRow(
+  $: EngineInterface,
+  e: RenderInput,
+  ids: readonly (string | undefined)[],
+  own: number,
+  ownFailed: number,
+): Promise<RenderElement> {
+  const { Box, Button, Text } = $.ui.resolve(e)
+  const all = await read($, groups)
+  const run = runOf(all, ids)
+  const mine = new Set(ids)
+  const last = run.at(-1)
+
+  if (run.length > 0 && last !== undefined && !mine.has(last.id)) {
+    return <Box />
+  }
+
+  const count = Math.max(own, run.length)
+  const runIds = run.length > 0 ? run.map(x => x.id) : ids
+  const changes = changesOf(all, runIds)
+  const failed = run.length > 0 ? run.filter(x => x.status === 'error').length : ownFailed
+
+  return (
+    <Box key="log-card" marginTop={1}>
+      <Text color="claude">◆ </Text>
+      <Button key="log" plain onPress={() => focusOn($, runIds)} hover={{ color: 'white' }}>
+        <Text color={LABEL}>{`${countLabel(count)}${changes}`}</Text>
+        {failed > 0 && <Text color="error">{` · ${failed} failed`}</Text>}
+      </Button>
+    </Box>
+  )
+}
+
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     await $.command.register({
       name: 'panel',
-      description: 'Toggle the side panel: log, todo, files, agents',
+      description: 'Toggle the side panel: log, files, agents',
     })
     const started = await next(e)
 
-    // The [ diff ] button opens the engine's git diff panel, so it shows only
+    // The diff chip opens the engine's git diff panel, so it shows only
     // inside a work tree.
     try {
       const git = await $.process.run(['git', 'rev-parse', '--is-inside-work-tree'], {
@@ -530,6 +549,7 @@ export const register: Register = on => {
       await start($)
 
       if (e.origin.kind === 'composer') {
+        newRun()
         const at = await $.clock.now()
         const group: LogGroup = {
           id: `g${at}`,
@@ -549,7 +569,15 @@ export const register: Register = on => {
     return next(e)
   })
 
+  // Text in a response starts a new run; a subagent's steps are its own.
+  on('turn.step', async function* ($, e, next) {
+    const response = yield* next(e)
+    if (e.agentId === undefined && response.answer.trim() !== '') newRun()
+    return response
+  })
+
   on('turn.start', async ($, e, next) => {
+    newRun()
     await start($)
 
     return next(e)
@@ -619,6 +647,7 @@ export const register: Register = on => {
         tool: e.tool,
         ...describe(e.tool, e),
         status: 'running',
+        run: currentRun,
       }
       const at = await $.clock.now()
       await update($, groups, list =>
@@ -639,38 +668,26 @@ export const register: Register = on => {
           ),
         })),
       )
-      if (status === 'ok') await trackTodos($, e.tool, e, ran.result)
     } catch {}
 
     return ran
   })
 
   // In the chat a run of tool calls is one dim, pressable line; the log holds
-  // the rest. An expanded group unfolds into ToolUse rows of its own.
+  // the rest. Rows the engine draws apart (one per response) fold into the
+  // run's last row; the others draw nothing. An expanded group unfolds into
+  // ToolUse rows of its own.
   on('ui.render', { component: 'ToolGroup' }, async ($, e, next) => {
     if (e.surface !== 'terminal' || e.props.isExpanded) {
       return next(e)
     }
 
-    const { Box, Button, Text } = $.ui.resolve(e)
-    const changes = changesOf(
-      await read($, groups),
+    return runRow(
+      $,
+      e,
       e.props.calls.map(call => call.tool_use_id),
-    )
-    const failed = e.props.calls.filter(call => call.isErrored).length
-
-    return (
-      <Box marginTop={1}>
-        <Button
-          key="log"
-          plain
-          dimColor
-          onPress={() => focusOn($, e.props.calls.map(call => call.tool_use_id))}
-        >
-          {`› ${countLabel(e.props.calls.length)}${changes}`}
-          {failed > 0 && <Text color="error">{` · ${failed} failed`}</Text>}
-        </Button>
-      </Box>
+      e.props.calls.length,
+      e.props.calls.filter(call => call.isErrored).length,
     )
   })
 
@@ -679,17 +696,7 @@ export const register: Register = on => {
       return next(e)
     }
 
-    const { Box, Button, Text } = $.ui.resolve(e)
-    const changes = changesOf(await read($, groups), [e.props.tool_use_id])
-
-    return (
-      <Box marginTop={1}>
-        <Button key="log" plain dimColor onPress={() => focusOn($, [e.props.tool_use_id])}>
-          {`› ${countLabel(1)}${changes}`}
-          {e.props.isErrored && <Text color="error"> · failed</Text>}
-        </Button>
-      </Box>
-    )
+    return runRow($, e, [e.props.tool_use_id], 1, e.props.isErrored ? 1 : 0)
   })
 
   // A standalone call's result block draws apart from its row: it lives in
@@ -713,15 +720,12 @@ export const register: Register = on => {
     const now = await read($, tick)
     const latest = (await read($, groups)).at(-1)
     const running = latest?.entries.filter(x => x.status === 'running').at(-1)
-    const plan = await read($, todos)
-    const planDone = plan.filter(x => x.status === 'completed').length
-    const progress = plan.length > 0 && planDone < plan.length ? `${planDone}/${plan.length} · ` : ''
-    const activity = progress + (running?.activity ?? MODE_ACTIVITY[e.props.mode] ?? '')
-    const room = Math.max(10, (e.viewport?.columns ?? 80) - 14)
+    const activity = running?.activity ?? MODE_ACTIVITY[e.props.mode] ?? ''
+    const room = Math.max(10, (e.viewport?.columns ?? 80) - 18)
 
-    // A blank line above keeps it off the tool line; the band spaces itself.
+    // A card in the band's rounded frame, a blank line above it.
     return (
-      <Box marginTop={1}>
+      <Box marginTop={1} alignSelf="flex-start" borderStyle="round" borderColor={FRAME} paddingX={1}>
         <Text color="claude">{FRAMES[now.frame] ?? FRAMES[0]}</Text>
         <Text dimColor> {elapsed(now.elapsedMs)}</Text>
         {activity !== '' && (
@@ -744,32 +748,56 @@ export const register: Register = on => {
     const { Box, Button, Text } = $.ui.resolve(e)
     const hasDiff = await read($, isRepo)
 
+    // A framed button, in the meters' rounded frame; the frame and the label
+    // light under the pointer. It never shrinks, so a narrow band wraps none.
+    const framed = (key: string, children: RenderNode) => (
+      <Box
+        key={`${key}-box`}
+        flexShrink={0}
+        marginRight={1}
+        borderStyle="round"
+        borderColor={FRAME}
+        paddingX={1}
+        hover={{ borderColor: FRAME_HOVER }}
+      >
+        {children}
+      </Box>
+    )
+
     // No sizing props here: the engine refuses its own node under a sized Box.
+    // The panel frame has two parts: a click on `panel` opens or closes it; ⌃T
+    // is the key that hands it the keyboard. The engine cannot tell a click
+    // from the key, so each part keeps its own press.
     return (
       <Box>
-        <Button key="log-toggle" label="panel" dimColor onPress={() => toggle($)} />
-        <Text> </Text>
-        {/* The keyboard way in: ctrl+t in ~/.claude/keybindings.json is bound
-            to an engine action only the diff panel handles, free at the prompt. */}
-        <Button
-          key="panel-key"
-          label="ctrl+t"
-          plain
-          dimColor
-          action="app:toggleDiffPreSession"
-          onPress={() => focusPanel($)}
-        />
-        {hasDiff && <Text> </Text>}
-        {hasDiff && (
-          <Button
-            key="diff-open"
-            label="diff"
-            dimColor
-            onPress={async () => {
-              await $.command.run({ command: 'diff' })
-            }}
-          />
+        {framed(
+          'log-toggle',
+          <Box>
+            <Button key="log-toggle" plain onPress={() => toggle($)} hover={{ color: 'white' }}>
+              <Text color={LABEL}>☰ panel</Text>
+            </Button>
+            <Text>  </Text>
+            {/* ctrl+t in ~/.claude/keybindings.json is bound to an engine
+                action only the diff panel handles, free at the prompt. */}
+            <Button key="panel-key" plain action="app:toggleDiffPreSession" onPress={() => focusPanel($)}>
+              <Text color={KEY}>⌃T</Text>
+            </Button>
+          </Box>,
         )}
+        {hasDiff &&
+          framed(
+            'diff-open',
+            <Button
+              key="diff-open"
+              plain
+              hover={{ color: 'white' }}
+              onPress={async () => {
+                await $.command.run({ command: 'diff' })
+              }}
+            >
+              <Text color={LABEL}>± diff</Text>
+            </Button>,
+          )}
         {below}
       </Box>
     )
@@ -788,10 +816,12 @@ export const register: Register = on => {
       text.split('\n').reduce((n, l) => n + Math.max(1, Math.ceil(l.length / Math.max(1, width))), 0)
     const patchLines = (patch: string) => patch.replace(/\n$/, '').split('\n').length
 
-    const tab = await read($, tabAtom)
+    // A stored tab the panel no longer has (Todo) falls back to the log.
+    const stored = await read($, tabAtom)
+    const tab = TABS.includes(stored) ? stored : 'log'
     const frame = FRAMES[now.frame] ?? FRAMES[0]
     const lastSeen = await read($, seen)
-    const current = signatures(list, await read($, todos), await read($, agents))
+    const current = signatures(list, await read($, agents))
     // Active: orange. Something new since last viewed: bright. Else dim.
     const isNew = (t: Tab) => t !== tab && current[t] !== '' && current[t] !== (lastSeen[t] ?? '')
     const step = (by: number) => async () => {
@@ -903,50 +933,6 @@ export const register: Register = on => {
             </Box>
           </Box>
         </Box>
-      )
-    }
-
-    if (tab === 'todo') {
-      const plan = await read($, todos)
-
-      if (plan.length === 0) {
-        return windowed(<Text dimColor>No plan yet. Claude writes one for longer tasks.</Text>, 1, new Map())
-      }
-
-      const done = plan.filter(t => t.status === 'completed').length
-      const height = 2 + plan.reduce((n, t) => n + lines(t.status === 'in_progress' ? (t.activeForm ?? t.content) : t.content, columns - 2), 0)
-
-      return windowed(
-        <Box flexDirection="column">
-          <Text dimColor>
-            {done}/{plan.length} done
-          </Text>
-          <Text> </Text>
-          {plan.map(t => (
-            <Box key={t.id}>
-              <Box width={2} flexShrink={0}>
-                {t.status === 'completed' ? (
-                  <Text color="success">✓</Text>
-                ) : t.status === 'in_progress' ? (
-                  <Text color="claude">{frame}</Text>
-                ) : (
-                  <Text dimColor>○</Text>
-                )}
-              </Box>
-              <Box width={columns - 2}>
-                <Text
-                  dimColor={t.status === 'completed'}
-                  bold={t.status === 'in_progress'}
-                  wrap="wrap"
-                >
-                  {t.status === 'in_progress' ? (t.activeForm ?? t.content) : t.content}
-                </Text>
-              </Box>
-            </Box>
-          ))}
-        </Box>,
-        height,
-        new Map(),
       )
     }
 
