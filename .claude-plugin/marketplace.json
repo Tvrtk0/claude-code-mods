@@ -17,13 +17,13 @@
       "name": "usage-meters",
       "source": "./usage-meters",
       "description": "A band above the prompt: context, 5-hour and weekly meters in one frame, with reset times and hover details.",
-      "version": "1.2.0"
+      "version": "1.2.1"
     },
     {
       "name": "tool-log",
       "source": "./tool-log",
       "description": "A side panel with a live tool log grouped by prompt, changed files with diffs and subagents; folds tool calls in the chat and replaces the spinner with a minimal one.",
-      "version": "1.12.0"
+      "version": "1.13.0"
     },
     {
       "name": "turn-details",

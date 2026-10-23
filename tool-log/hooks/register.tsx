@@ -11,6 +11,28 @@ const NOTIFY_AFTER_MS = 30_000
 // The log's own background, a dark plum in place of the engine's grey.
 const PANE_BG = '#2a2133'
 
+// The spinner card's frame sweeps along the meters' gradient, teal to red and
+// back, once every SWEEP_MS.
+const SWEEP_MS = 4_000
+const STOPS: [number, number, number][] = [
+  [0x4f, 0xd1, 0xc5],
+  [0x98, 0xc3, 0x79],
+  [0xe5, 0xc0, 0x7b],
+  [0xd1, 0x9a, 0x66],
+  [0xe0, 0x6c, 0x75],
+]
+
+function gradient(at: number) {
+  const x = Math.min(1, Math.max(0, at)) * (STOPS.length - 1)
+  const i = Math.min(STOPS.length - 2, Math.floor(x))
+  const from = STOPS[i] ?? STOPS[0]!
+  const to = STOPS[i + 1] ?? from
+  const mix = (k: 0 | 1 | 2) => Math.round(from[k] + (to[k] - from[k]) * (x - i))
+  const hex = (n: number) => n.toString(16).padStart(2, '0')
+
+  return `#${hex(mix(0))}${hex(mix(1))}${hex(mix(2))}`
+}
+
 // The band's framed buttons and the chat's tool cards: the meters' grey frame, lighter under the
 // pointer, a grey label and a dimmer key hint.
 const FRAME = '#5a5a5a'
@@ -723,9 +745,14 @@ export const register: Register = on => {
     const activity = running?.activity ?? MODE_ACTIVITY[e.props.mode] ?? ''
     const room = Math.max(10, (e.viewport?.columns ?? 80) - 18)
 
-    // A card in the band's rounded frame, a blank line above it.
+    // A card in a rounded frame, a blank line above it. A border takes one
+    // color, so the gradient runs through time instead: the frame sweeps
+    // teal to red and back every few seconds while the turn runs.
+    const sweep = (now.elapsedMs % SWEEP_MS) / SWEEP_MS
+    const border = gradient(sweep < 0.5 ? sweep * 2 : 2 - sweep * 2)
+
     return (
-      <Box marginTop={1} alignSelf="flex-start" borderStyle="round" borderColor={FRAME} paddingX={1}>
+      <Box marginTop={1} alignSelf="flex-start" borderStyle="round" borderColor={border} paddingX={1}>
         <Text color="claude">{FRAMES[now.frame] ?? FRAMES[0]}</Text>
         <Text dimColor> {elapsed(now.elapsedMs)}</Text>
         {activity !== '' && (

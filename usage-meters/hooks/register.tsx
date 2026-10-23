@@ -181,11 +181,12 @@ export const register: Register = on => {
     // the meters, frame on frame.
     const below = await next(e)
 
-    // One frame around the whole band, a blank line above it, sets it off
-    // from the chat scrolling above: it stays put, the chat moves. No width
+    // One frame around the whole band, as wide as what it holds, a blank
+    // line above it, sets it off from the chat scrolling above: it stays put,
+    // the chat moves. No width
     // of its own: the engine refuses its node under a sized Box.
     return (
-      <Box marginTop={1} flexDirection="column" borderStyle="round" borderColor={OUTER} paddingX={1}>
+      <Box marginTop={1} alignSelf="flex-start" flexDirection="column" borderStyle="round" borderColor={OUTER} paddingX={1}>
         {below}
         {/* All three in one rounded frame, as wide as they are. */}
         <Box alignSelf="flex-start" borderStyle="round" borderColor={CARD_BORDER} paddingX={1}>

@@ -1,6 +1,6 @@
 {
   "name": "usage-meters",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "A band above the prompt: context, 5-hour and weekly meters in one frame, with reset times and hover details.",
   "author": {
     "name": "Tvrtk0"
