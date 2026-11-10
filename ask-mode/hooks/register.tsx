@@ -46,8 +46,43 @@ function stepModel(at: Level, model: string): { model: string; effort: 'low' | '
   return undefined
 }
 
+// Herdr: the terminal this session runs in (HC_TERMINAL_ID), so its pane header can show the
+// level, and the reader's open mark, while which the band is left to that header.
+let herdrTerminal: string | null | undefined
+let homeDir: string | null = null
+// The wrap-up whose next list you dismissed (0): hidden until the next one.
+let hiddenAt = 0
+const readerSeen = { open: false, at: 0 }
+
+async function herdr($: EngineInterface) {
+  if (herdrTerminal === undefined) {
+    try { herdrTerminal = await $.env.get('HC_TERMINAL_ID'); homeDir = await $.env.get('HOME') } catch { herdrTerminal = null }
+  }
+  return herdrTerminal
+}
+
+async function tellHerdr($: EngineInterface, to: Level) {
+  const t = await herdr($)
+  if (!t || !homeDir) return
+  await $.process.run(['sh', '-c', 'mkdir -p "$1" && printf %s "$2" > "$1/$3.json"', 'sh', `${homeDir}/.claude/state/ask-mode`, JSON.stringify({ level: to, at: Date.now() }), t], { timeoutMs: 2000 }).catch(() => {})
+}
+
+async function readerOpen($: EngineInterface) {
+  const t = await herdr($)
+  if (!t || !homeDir) return false
+  const now = Date.now()
+  if (now - readerSeen.at < 3000) return readerSeen.open
+  readerSeen.at = now
+  try {
+    const r = await $.process.run(['stat', '-f', '%m', `${homeDir}/.claude/state/reader/${t}`], { timeoutMs: 2000 })
+    readerSeen.open = r.exitCode === 0 && now - Number(r.stdout.trim()) * 1000 < 45_000
+  } catch { readerSeen.open = false }
+  return readerSeen.open
+}
+
 async function setLevel($: EngineInterface, to: Level) {
   await update($, level, () => to)
+  await tellHerdr($, to)
 }
 
 const confirmation = (to: Level) =>
@@ -64,6 +99,8 @@ export const register: Register = on => {
     })
     await $.command.register({ name: 'quick', description: 'Read-only mode with a short answer from a faster model' })
     await $.command.register({ name: 'deep', description: 'Read-only mode with a thorough analysis at max effort' })
+    // A new session starts with the mode off; Herdr's header hears so too.
+    await tellHerdr($, await read($, level))
 
     return next(e)
   })
@@ -123,7 +160,8 @@ export const register: Register = on => {
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const below = await next(e)
 
-    if (e.surface !== 'terminal' || e.props.hasSurvey) {
+    // In Herdr with the reader open, the pane's header shows the level instead.
+    if (e.surface !== 'terminal' || e.props.hasSurvey || (await readerOpen($))) {
       return below
     }
 
@@ -131,17 +169,44 @@ export const register: Register = on => {
     const at = await read($, level)
     const isOn = at !== 'off'
 
-    // A segmented switch beside the panel's button, in the band's rounded
-    // frame: a click picks a level, a click on the active one turns it off.
-    // While on, the frame and the level are yellow beside a lock, whose cell
-    // is kept while off, so the switch never moves.
-    return (
-      <Box>
-        {below}
-        <Box flexShrink={0}>
-          <Box flexShrink={0} paddingTop={1}>
-            <Text color="warning">{isOn ? '🔒 ' : '   '}</Text>
+    // plan-steps' next options (its plan file), above the row: a click fills the prompt, 0 hides.
+    let options: string[] = [], wrapAt = 0
+    if (herdrTerminal && homeDir && !e.props.isWorking) {
+      try {
+        const plan = JSON.parse(await $.fs.read(`${homeDir}/.claude/state/plan/${herdrTerminal}.json`) as unknown as string)
+        options = Array.isArray(plan?.wrap?.next) ? plan.wrap.next.slice(0, 3) : []
+        wrapAt = Number(plan?.wrapAt ?? 0)
+      } catch {}
+    }
+    const showNext = options.length > 0 && hiddenAt !== wrapAt
+    const nextList = showNext ? (
+      <Box key="next" flexDirection="column" marginTop={1}>
+        <Text dimColor>next:</Text>
+        {options.map((o, i) => (
+          <Box key={`next-${i}`} marginLeft={2}>
+            <Button key={`next-btn-${i}`} plain hotkey={String(i + 1)} onPress={async () => { await $.prompt.fill({ text: o }) }}>
+              <Text>{o}</Text>
+            </Button>
           </Box>
+        ))}
+        <Box key="next-hide" marginLeft={2}>
+          <Button key="next-btn-0" plain hotkey="0" onPress={() => { hiddenAt = wrapAt; $.ui.invalidate("ui.render") }}>
+            <Text dimColor>dismiss</Text>
+          </Button>
+        </Box>
+      </Box>
+    ) : null
+
+    // A segmented switch beside the panel's button, in the band's rounded
+    // frame, starting on the prompt's own column: a click picks a level, a
+    // click on the active one turns it off. While on, the frame and the level
+    // are yellow and a lock follows the frame, so the switch never moves.
+    return (
+      <Box flexDirection="column">
+      {nextList}
+      <Box alignItems="center">
+        {below}
+        <Box flexShrink={0} alignItems="center">
           <Box
             key="levels"
             flexShrink={0}
@@ -170,7 +235,11 @@ export const register: Register = on => {
               )
             })}
           </Box>
+          <Box flexShrink={0}>
+            <Text color="warning">{isOn ? '  🔒 read-only' : ' '}</Text>
+          </Box>
         </Box>
+      </Box>
       </Box>
     )
   })

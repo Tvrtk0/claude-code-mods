@@ -1,0 +1,8 @@
+{
+  "name": "plan-steps",
+  "version": "0.1.0",
+  "description": "Claude keeps a short plan of the request in plain words and wraps up with what it did; Herdr's steps pane shows both.",
+  "author": {
+    "name": "Tvrtk0"
+  }
+}

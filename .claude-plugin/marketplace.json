@@ -32,10 +32,46 @@
       "version": "1.1.0"
     },
     {
+      "name": "pr-inbox",
+      "source": "./pr-inbox",
+      "description": "A review inbox for the current repo's open PRs: who is waiting on you, what changed since your review, unresolved threads with their code, one key to open, explain or review.",
+      "version": "0.2.0"
+    },
+    {
       "name": "ask-mode",
       "source": "./ask-mode",
       "description": "A read-only mode for questions: Claude answers and investigates but cannot change files, run state-changing commands or send anything; quick, ask and deep levels.",
       "version": "1.0.0"
+    },
+    {
+      "name": "reader-quiet",
+      "source": "./reader-quiet",
+      "description": "While Herdr's Claude reader shows this session, the terminal keeps only the prompt, dialogs and spinner.",
+      "version": "0.1.0"
+    },
+    {
+      "name": "plan-steps",
+      "source": "./plan-steps",
+      "description": "Claude keeps a short plan of the request in plain words and wraps up with what it did; Herdr's steps pane shows both.",
+      "version": "0.1.0"
+    },
+    {
+      "name": "rule-guard",
+      "source": "./rule-guard",
+      "description": "Holds posting to GitHub or pushing without your say-so, em dashes in posts and commits, and i18n commits missing a catalog.",
+      "version": "0.1.0"
+    },
+    {
+      "name": "prompt-queue",
+      "source": "./prompt-queue",
+      "description": "Queue the next prompts while Claude works: a band button or /next, each sent when the turn before it ends.",
+      "version": "0.1.0"
+    },
+    {
+      "name": "image-slim",
+      "source": "./image-slim",
+      "description": "/slim drops the pictures from older messages and keeps every word, to win back context.",
+      "version": "0.1.0"
     }
   ]
 }

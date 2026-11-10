@@ -1,0 +1,6 @@
+{
+  "name": "reader-quiet",
+  "version": "0.1.0",
+  "description": "While Herdr's Claude reader shows this session, the terminal keeps only the prompt, dialogs and spinner: replies, prompts and tool rows are read in the reader.",
+  "author": { "name": "Tvrtk0" }
+}

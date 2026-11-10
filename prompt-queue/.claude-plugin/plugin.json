@@ -1,0 +1,8 @@
+{
+  "name": "prompt-queue",
+  "version": "0.1.0",
+  "description": "Queue the next prompts while Claude works: a button beside the prompt band (or /next) takes what you typed, and each queued prompt is sent when the turn before it ends.",
+  "author": {
+    "name": "Tvrtk0"
+  }
+}

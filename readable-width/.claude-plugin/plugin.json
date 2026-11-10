@@ -4,5 +4,6 @@
   "description": "Caps reply and prompt text at 80 columns while code blocks and tables keep the full width, and highlights your own prompts.",
   "author": {
     "name": "Tvrtk0"
-  }
+  },
+  "types": "./types/index.d.ts"
 }

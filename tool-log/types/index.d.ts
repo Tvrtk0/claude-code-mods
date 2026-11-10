@@ -11,6 +11,10 @@ export type LogEntry = {
   status: 'running' | 'ok' | 'error'
   // The run of tool calls it belongs to: calls with no text between them.
   run?: string
+  startedAt?: number
+  endedAt?: number
+  // Why it failed, in a line.
+  error?: string
 }
 
 export type LogGroup = {

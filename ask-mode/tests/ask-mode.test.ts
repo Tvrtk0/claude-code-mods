@@ -12,7 +12,7 @@ test('lets read-only Bash through and refuses the rest', async () => {
     'git log --oneline -5 && git status',
     'rg "foo|bar" src | head -20',
     'cat a.txt 2>/dev/null || echo none',
-    'cd ~/dev/torneo && git diff main...HEAD --stat',
+    'cd ~/dev/app && git diff main...HEAD --stat',
     'find . -name "*.ts" | xargs grep -n TODO',
     'gh pr view 12 --comments',
     'gh api repos/o/r/pulls',
@@ -123,3 +123,15 @@ test('briefs each prompt and runs quick on Haiku at low effort', async ($, on) =
   expect(step.effort).toBe('low')
 })
 
+
+test('plan-steps next options show above the switch, the switch keeps its row', async ($, on) => {
+  on('ui.render', () => ENGINE as never)
+  on('env.get', (_, e) => ({ value: (e as { name?: string }).name === 'HOME' ? '/h' : 't9' }))
+  on('fs.read', () => ({ value: JSON.stringify({ wrap: { next: ['Commit and push', 'Test it'] }, wrapAt: 5 }) }))
+  on('process.run', () => ({ value: { exitCode: 1, stdout: '', stderr: '' } }))
+  const ui = await $.ui.mount(BAND)
+  expect((await ui.find({ type: 'Text', text: /next:/ }))?.text).toBe('next:')
+  expect((await ui.find({ type: 'Text', text: /Commit and push/ }))?.text).toBe('Commit and push')
+  expect((await ui.find({ type: 'Text', text: /deep/ }))?.text).toBeTruthy()
+  await ui.unmount()
+})

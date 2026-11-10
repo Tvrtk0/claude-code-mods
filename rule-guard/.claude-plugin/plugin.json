@@ -1,0 +1,8 @@
+{
+  "name": "rule-guard",
+  "version": "0.1.0",
+  "description": "Holds what your rules forbid: posting to GitHub or pushing without your say-so in your last message, em dashes in posts and commits, an i18n change that skips one of the nine catalogs.",
+  "author": {
+    "name": "Tvrtk0"
+  }
+}

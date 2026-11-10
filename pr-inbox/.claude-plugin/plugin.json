@@ -1,0 +1,33 @@
+{
+  "name": "pr-inbox",
+  "version": "0.2.0",
+  "description": "A review inbox for the current repo's open PRs: who is waiting on you, what changed since your review, unresolved threads with their code, one key to open, explain or review.",
+  "author": { "name": "Tvrtk0" },
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "pollMinutes": {
+      "type": "number",
+      "title": "Poll interval",
+      "description": "Minutes between refreshes while the inbox is on.",
+      "default": 5
+    },
+    "reviewCommand": {
+      "type": "string",
+      "title": "Review command",
+      "description": "Typed into the prompt by r. {n} is the PR number.",
+      "default": "/comment-pr {n}"
+    },
+    "reReviewCommand": {
+      "type": "string",
+      "title": "Re-review command",
+      "description": "Typed by r on a PR that moved since your review. {n} is the PR number, {sha} the commit your review sits on.",
+      "default": "/comment-pr {n} (review only what arrived after {sha})"
+    },
+    "explainCommand": {
+      "type": "string",
+      "title": "Explain command",
+      "description": "Typed into the prompt by e. {n} is the PR number.",
+      "default": "/read-pr {n}"
+    }
+  }
+}

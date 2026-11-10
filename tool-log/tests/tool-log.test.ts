@@ -35,9 +35,11 @@ test('logs tool calls and folds them in the chat', async ($, on) => {
   expect(await pane.find({ text: 'show an example' })).toBeDefined()
   expect(await pane.find({ text: 'List the mods' })).toBeDefined()
   expect(await pane.find({ text: 'ls -la' })).toBeUndefined()
-  expect(await pane.find({ text: /Read register\.tsx/ })).toBeDefined()
+  expect(await pane.find({ text: 'Read' })).toBeDefined()
+  expect(await pane.find({ text: /^register\.tsx/ })).toBeDefined()
   expect(await pane.find({ text: '✗' })).toBeDefined()
   expect(await pane.find({ text: 'cat ~/nope' })).toBeDefined()
+  expect(await pane.find({ text: 'nope' })).toBeDefined()
 
   await pane.press({ key: 'a' })
   expect(await pane.find({ text: 'ls -la ~/dev' })).toBeDefined()
@@ -149,11 +151,12 @@ test('a chat line focuses its prompt until the next prompt', async ($, on) => {
     requestId: 'tool-log',
     props: { title: 'Log', isFocused: false, bodyColumns: 56, placement: 'dock', scroll: { bodyRows: 30 } } as never,
   })
-  expect(await pane.find({ text: /viewing: first prompt/ })).toBeDefined()
+  expect(await pane.find({ text: 'first prompt' })).toBeDefined()
+  expect(await pane.find({ key: 'unfocus' })).toBeDefined()
   expect(await pane.find({ text: 'second prompt' })).toBeUndefined()
 
   await $.prompt.submit({ text: 'third prompt', origin: { kind: 'composer' }, wait: false } as never)
-  expect(await pane.find({ text: /viewing:/ })).toBeUndefined()
+  expect(await pane.find({ key: 'unfocus' })).toBeUndefined()
 })
 
 const PANE_PROPS = { title: 'Log', isFocused: false, bodyColumns: 56, placement: 'dock', scroll: { bodyRows: 30 } } as never
@@ -264,10 +267,10 @@ test('scrolls under a fixed header and starts at the newest row', async ($, on) 
     props: { title: 'Panel', isFocused: true, bodyColumns: 56, placement: 'dock', scroll: { bodyRows: 20 } } as never,
   })
   expect(await pane.find({ text: /Log/ })).toBeDefined()
-  expect(await pane.find({ text: /↑ \d+–31 of 31/ })).toBeDefined()
+  expect(await pane.find({ text: / of \d+/ })).toBeUndefined()
 
   await pane.press({ key: 'hint-g' })
-  expect(await pane.find({ text: /^1–\d+ of 31 ↓$/ })).toBeDefined()
+  expect(await pane.find({ key: 's0' })).toBeDefined()
 })
 
 test('lists a file Write created in the Files tab', async ($, on) => {

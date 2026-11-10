@@ -1,0 +1,8 @@
+{
+  "name": "image-slim",
+  "version": "0.1.0",
+  "description": "/slim drops the pictures from older messages (screenshots, pasted images) and keeps every word: a compaction that summarizes nothing, to win back context.",
+  "author": {
+    "name": "Tvrtk0"
+  }
+}

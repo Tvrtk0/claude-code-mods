@@ -8,8 +8,6 @@ const FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '
 const FRAME_MS = 120
 const NOTIFY_AFTER_MS = 30_000
 
-// The log's own background, a dark plum in place of the engine's grey.
-const PANE_BG = '#2a2133'
 
 // The spinner card's frame sweeps along the meters' gradient, teal to red and
 // back, once every SWEEP_MS.
@@ -39,6 +37,9 @@ const FRAME = '#5a5a5a'
 const FRAME_HOVER = '#9a9a9a'
 const LABEL = '#c8c8c8'
 const KEY = '#8a8a8a'
+// A log row under the pointer, and the one j and k are on.
+const HOVER_BG = '#3a3a3a'
+const SELECTED_BG = '#2e2e2e'
 
 const groups = atom({ plugin: 'tool-log', key: 'groups' } as const, [])
 const MAX_GROUPS = 50
@@ -83,6 +84,21 @@ const elapsed = (ms: number) => {
   const s = Math.floor(ms / 1000)
 
   return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${pad(s % 60)}s`
+}
+
+// How long a call took: `0.3s`, `4.2s`, `12s`, `1m 05s`.
+const timeTaken = (ms: number) =>
+  ms < 10_000 ? `${(Math.max(0, ms) / 1000).toFixed(1)}s` : elapsed(ms)
+
+// A tool's name in the log, colored by what it does: reading blue, writing
+// yellow, the shell grey, subagents purple, the web teal.
+function toolColor(tool: string) {
+  if (['Read', 'Grep', 'Glob', 'LS', 'ToolSearch'].includes(tool)) return '#81a1c1'
+  if (['Edit', 'Write', 'NotebookEdit'].includes(tool)) return '#e5c07b'
+  if (tool === 'Bash') return '#9a9a9a'
+  if (tool === 'Agent' || tool === 'Task') return '#b48ead'
+  if (tool.startsWith('Web')) return '#4fd1c5'
+  return '#c8c8c8'
 }
 
 const countLabel = (n: number) => `${n} ${n === 1 ? 'tool' : 'tools'}`
@@ -670,8 +686,9 @@ export const register: Register = on => {
         ...describe(e.tool, e),
         status: 'running',
         run: currentRun,
+        startedAt: await $.clock.now(),
       }
-      const at = await $.clock.now()
+      const at = entry.startedAt ?? 0
       await update($, groups, list =>
         onLatest(list, at, g => ({ ...g, entries: [...g.entries, entry] })),
       )
@@ -682,11 +699,20 @@ export const register: Register = on => {
     try {
       const status = ran.deny !== undefined || ran.isError === true ? 'error' : 'ok'
       const change = status === 'ok' ? patchOf(ran.result) : undefined
+      const endedAt = await $.clock.now()
+      // Why it failed, in a line: the refusal, or the error the model read.
+      const reason =
+        ran.deny !== undefined
+          ? ran.deny
+          : ran.isError === true
+            ? (ran.text ?? (typeof ran.result === 'string' ? ran.result : ''))
+            : ''
+      const error = reason.trim() === '' ? undefined : firstLine(reason.trim())
       await update($, groups, list =>
         (list ?? []).map(g => ({
           ...g,
           entries: g.entries.map(one =>
-            one.id === id ? { ...one, status, ...(change ?? {}) } : one,
+            one.id === id ? { ...one, status, endedAt, error, ...(change ?? {}) } : one,
           ),
         })),
       )
@@ -868,14 +894,16 @@ export const register: Register = on => {
     const isFocused = e.props.isFocused
     const header = (
       <Box flexDirection="column">
-        <Box>
+        {/* The tabs: a segmented switch in a rounded frame, as the band's. */}
+        <Box alignSelf="flex-start" borderStyle="round" borderColor={FRAME} paddingX={1}>
           {TABS.map((t, i) => (
-            <Box key={`tabbox-${t}`} marginRight={2}>
+            <Box key={`tabbox-${t}`}>
+              {i > 0 && <Text color={FRAME}>{'  │  '}</Text>}
               <Button
                 key={`tab-${t}`}
                 hotkey={String(i + 1)}
                 plain
-                dimColor={t !== tab && !isNew(t)}
+                hover={t === tab ? undefined : { color: 'white' }}
                 onPress={async () => {
                   cursorKey = null
                   await markSeen($, [tab, t])
@@ -885,9 +913,9 @@ export const register: Register = on => {
                 {t === tab ? (
                   <Text bold color="claude">{TAB_TITLES[t]}</Text>
                 ) : isNew(t) ? (
-                  <Text bold>{TAB_TITLES[t]}</Text>
+                  <Text bold color="white">{TAB_TITLES[t]}</Text>
                 ) : (
-                  TAB_TITLES[t]
+                  <Text color={KEY}>{TAB_TITLES[t]}</Text>
                 )}
               </Button>
             </Box>
@@ -912,7 +940,8 @@ export const register: Register = on => {
         )}
       </Box>
     )
-    const headerRows = isFocused ? 4 : 1
+    // The tabs' frame is three rows; the keys add a gap and two rows.
+    const headerRows = isFocused ? 6 : 3
     // Body rows less the padding, the header and the gap under it.
     const view = Math.max(3, bodyRows - 2 - headerRows - 1)
 
@@ -932,12 +961,8 @@ export const register: Register = on => {
       // sees one without the other.
       layout = { tab, rowLine, content: height, view, offset }
       rowKeys = keys
-      const more = offset > 0 ? '↑ ' : ''
-      const less = offset < max ? ' ↓' : ''
-
       return (
         <Box
-          backgroundColor={PANE_BG}
           width={e.props.bodyColumns}
           height={e.props.placement === 'dock' ? bodyRows : undefined}
           paddingX={1}
@@ -945,15 +970,8 @@ export const register: Register = on => {
           flexDirection="column"
         >
           {header}
-          <Box height={1}>
-            {(more !== '' || less !== '') && (
-              <Text dimColor>
-                {more}
-                {offset + 1}–{Math.min(height, offset + view)} of {height}
-                {less}
-              </Text>
-            )}
-          </Box>
+          {/* A blank row between the header and the scrolled window. */}
+          <Box height={1} />
           <Box height={view} overflow="hidden" flexDirection="column">
             <Box marginTop={-offset} flexDirection="column" flexShrink={0}>
               {content}
@@ -1083,123 +1101,149 @@ export const register: Register = on => {
     const pressable = (x: LogEntry) => (x.command !== undefined || x.patch !== undefined) && x.status === 'ok'
     const logKeys = shown.flatMap(g => g.entries.filter(pressable).map(x => x.id))
 
-    // Where each row lands: a group is its header, a line per call, what an
-    // open or failed call unfolds, and a blank line before the next group.
+    // Inside a group's card: its frame and padding take four columns.
+    const inner = columns - 4
+    // A row: the status (2), the tool's name (7), the label, the diff counts
+    // and the time at the right (7).
+    const labelRoom = (x: LogEntry) =>
+      Math.max(8, inner - 2 - 7 - 7 - (x.patch !== undefined ? ` +${x.added ?? 0} −${x.removed ?? 0}`.length : 0) - 2)
+
+    // Where each row lands: a group is its card (a border row above and
+    // below), its header, a line per call and what an open or failed call
+    // unfolds; a blank line between cards.
     const rowLine = new Map<string, number>()
-    let y = target === undefined ? 0 : 2
+    let y = 0
     shown.forEach((g, gi) => {
       if (gi > 0) y += 1
-      y += 1
+      y += 2
       for (const x of g.entries) {
         rowLine.set(x.id, y)
-        // The row's own line, longer when its label and counts wrap.
-        const head = (x.patch !== undefined ? `${x.tool} ` : '') + x.label + (x.patch !== undefined ? ` +${x.added ?? 0} −${x.removed ?? 0}` : '') + ' ▸'
-        y += lines(head, columns - 4)
+        y += 1
         if (x.patch !== undefined && open.has(x.id)) y += patchLines(x.patch)
-        if (x.command !== undefined && x.status === 'error') y += 1
-        else if (x.command !== undefined && open.has(x.id)) y += lines(x.command, columns - 6)
+        if (x.status === 'error') {
+          if (x.command !== undefined) y += 1
+          if (x.error !== undefined) y += 1
+        } else if (x.command !== undefined && open.has(x.id)) y += lines(x.command, inner - 9)
       }
+      y += 1
     })
 
     const latest = list[list.length - 1]
+    const isTarget = (g: LogGroup) => (target === undefined ? g === latest : g === target)
 
     return windowed(
       <Box flexDirection="column" gap={1}>
-        {target !== undefined && (
-          <Box>
-            <Text dimColor wrap="truncate-end">
-              viewing: {clip(target.prompt === '' ? '(no prompt)' : target.prompt, columns - 16)}
-            </Text>
-            <Text dimColor> · </Text>
-            <Button
-              key="unfocus"
-              label="✕"
-              plain
-              dimColor
-              onPress={() => update($, focus, () => null)}
-            />
-          </Box>
-        )}
         {shown.map(g => {
-          const isOld = target === undefined ? g !== latest : g !== target
+          const isOld = !isTarget(g)
           const meta = `${clockTime(g.startedAt).slice(0, 5)} · ${g.entries.length}`
-          const promptWidth = Math.max(8, columns - meta.length - 4)
+          const promptWidth = Math.max(8, inner - meta.length - 3 - (g === target ? 4 : 0))
 
           return (
-            <Box key={g.id} flexDirection="column">
+            <Box
+              key={g.id}
+              flexDirection="column"
+              borderStyle="round"
+              borderColor={isOld ? FRAME : 'claude'}
+              paddingX={1}
+            >
               <Box>
-                <Text bold={!isOld} dimColor={isOld} color="claude">
+                {/* Every prompt reads bold and bright, apart from the grey
+                    calls under it; the live card's alone is in the accent. */}
+                <Text bold color="claude" dimColor={isOld}>
                   ❯{' '}
                 </Text>
                 <Box width={promptWidth}>
-                  <Text bold={!isOld} dimColor={isOld} wrap="truncate-end">
+                  <Text bold color={isOld ? LABEL : 'white'} wrap="truncate-end">
                     {g.prompt === '' ? '(no prompt)' : g.prompt}
                   </Text>
                 </Box>
-                <Text dimColor> {meta}</Text>
+                <Text color={KEY}> {meta}</Text>
+                {/* The card a chat line opened: ✕ takes the log back to live. */}
+                {g === target && (
+                  <Box marginLeft={2}>
+                    <Button key="unfocus" label="✕" plain dimColor onPress={() => update($, focus, () => null)} />
+                  </Box>
+                )}
               </Box>
-              {g.entries.map(entry => (
-                <Box key={`row-${entry.id}`} flexDirection="column">
-                  <Box>
-                    <Box width={4} flexShrink={0}>
-                      <Text>  </Text>
-                      {entry.status === 'running' ? (
-                        <Text color="claude">{frame}</Text>
-                      ) : entry.status === 'ok' ? (
-                        <Text color="success" dimColor={isOld}>✓</Text>
-                      ) : (
-                        <Text color="error">✗</Text>
-                      )}
-                    </Box>
-                    {pressable(entry) ? (
-                      <Button
-                        key={entry.id}
-                        plain
-                        dimColor={isOld}
-                        onPress={() => toggleExpanded($, entry.id)}
-                      >
-                        {entry.patch !== undefined && <Text bold>{entry.tool} </Text>}
-                        {clip(entry.label, columns - 20)}
-                        {entry.patch !== undefined && (
-                          <Text>
-                            {' '}
-                            <Text color="success">+{entry.added ?? 0}</Text>{' '}
-                            <Text color="error">−{entry.removed ?? 0}</Text>
-                          </Text>
-                        )}
-                        <Text dimColor> {open.has(entry.id) ? '▾' : '▸'}</Text>
-                      </Button>
-                    ) : (
-                      <Text dimColor={isOld} wrap="truncate-end">
-                        {entry.command === undefined && (
-                          <Text bold>{entry.tool} </Text>
-                        )}
-                        {clip(entry.label, columns - 6)}
+              {g.entries.map(entry => {
+                const isOn = pressable(entry)
+                const isSelected = cursorKey === entry.id
+                const took = entry.startedAt === undefined
+                  ? ''
+                  : timeTaken((entry.endedAt ?? (entry.status === 'running' ? now.now : entry.startedAt)) - entry.startedAt)
+                const label = (
+                  <Text color={isOld ? KEY : LABEL}>
+                    {clip(entry.label, labelRoom(entry))}
+                    {entry.patch !== undefined && (
+                      <Text>
+                        {' '}
+                        <Text color="success">+{entry.added ?? 0}</Text>{' '}
+                        <Text color="error">−{entry.removed ?? 0}</Text>
                       </Text>
                     )}
-                  </Box>
-                  {entry.patch !== undefined && open.has(entry.id) && (
-                    <Box marginLeft={4} width={columns - 4}>
-                      <Code
-                        source={entry.patch}
-                        format="diff"
-                        path={entry.path}
-                        wrap="truncate-end"
-                      />
+                    {isOn && <Text color={KEY}> {open.has(entry.id) ? '▾' : '▸'}</Text>}
+                  </Text>
+                )
+
+                return (
+                  <Box key={`row-${entry.id}`} flexDirection="column">
+                    {/* The row lights under the pointer; the one j and k are
+                        on keeps a faint background. */}
+                    <Box
+                      key={`rowbox-${entry.id}`}
+                      backgroundColor={isSelected ? SELECTED_BG : undefined}
+                      hover={{ backgroundColor: HOVER_BG }}
+                    >
+                      <Box width={2} flexShrink={0}>
+                        {entry.status === 'running' ? (
+                          <Text color="claude">{frame}</Text>
+                        ) : entry.status === 'ok' ? (
+                          <Text color="success" dimColor={isOld}>✓</Text>
+                        ) : (
+                          <Text color="error">✗</Text>
+                        )}
+                      </Box>
+                      <Box width={7} flexShrink={0}>
+                        <Text color={toolColor(entry.tool)} dimColor={isOld}>
+                          {clip(entry.tool, 6)}
+                        </Text>
+                      </Box>
+                      <Box flexGrow={1}>
+                        {isOn ? (
+                          <Button key={entry.id} plain onPress={() => toggleExpanded($, entry.id)} hover={{ color: 'white' }}>
+                            {label}
+                          </Button>
+                        ) : (
+                          label
+                        )}
+                      </Box>
+                      <Box width={7} flexShrink={0} justifyContent="flex-end">
+                        <Text color={KEY}>{took}</Text>
+                      </Box>
                     </Box>
-                  )}
-                  {entry.command !== undefined &&
-                    (entry.status === 'error' || open.has(entry.id)) && (
-                      <Box marginLeft={6} width={columns - 6}>
-                        <Text dimColor wrap="wrap">
-                          {entry.status === 'error'
-                            ? clip(firstLine(entry.command), columns - 8)
-                            : entry.command}
+                    {entry.patch !== undefined && open.has(entry.id) && (
+                      <Box marginLeft={2} width={inner - 2}>
+                        <Code source={entry.patch} format="diff" path={entry.path} wrap="truncate-end" />
+                      </Box>
+                    )}
+                    {entry.command !== undefined && (entry.status === 'error' || open.has(entry.id)) && (
+                      <Box marginLeft={9} width={inner - 9}>
+                        <Text color={KEY} wrap="wrap">
+                          {entry.status === 'error' ? clip(firstLine(entry.command), inner - 10) : entry.command}
                         </Text>
                       </Box>
                     )}
-                </Box>
-              ))}
+                    {/* Why it failed, in red, under the call. */}
+                    {entry.status === 'error' && entry.error !== undefined && (
+                      <Box marginLeft={9} width={inner - 9}>
+                        <Text color="error" wrap="truncate-end">
+                          {clip(home(entry.error), inner - 10)}
+                        </Text>
+                      </Box>
+                    )}
+                  </Box>
+                )
+              })}
             </Box>
           )
         })}
